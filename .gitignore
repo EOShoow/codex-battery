@@ -1,0 +1,7 @@
+.DS_Store
+*.log
+*.swp
+*.tmp
+.build/
+CodexQuota.app/
+
