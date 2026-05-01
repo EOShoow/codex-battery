@@ -30,7 +30,7 @@ Requirements:
 - Codex desktop app with local state under `~/.codex`
 
 ```bash
-git clone https://github.com/EOShow/codex-battery.git
+git clone https://github.com/EOShoow/codex-battery.git
 cd codex-battery
 ./install.sh
 ```
