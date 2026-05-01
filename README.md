@@ -29,6 +29,27 @@ Requirements:
 - Xcode Command Line Tools, including `swiftc`
 - Codex desktop app with local state under `~/.codex`
 
+### Homebrew
+
+```bash
+brew install EOShoow/tap/codex-battery
+codex-battery
+```
+
+Optional login startup:
+
+```bash
+codex-battery-login install
+```
+
+Remove the login item:
+
+```bash
+codex-battery-login uninstall
+```
+
+### From Source
+
 ```bash
 git clone https://github.com/EOShoow/codex-battery.git
 cd codex-battery

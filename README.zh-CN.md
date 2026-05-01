@@ -29,6 +29,27 @@ Codex Battery 把 Codex 额度变成一个紧凑的菜单栏信号：
 - Xcode Command Line Tools，包含 `swiftc`
 - Codex desktop app，并且本机存在 `~/.codex` 状态
 
+### Homebrew
+
+```bash
+brew install EOShoow/tap/codex-battery
+codex-battery
+```
+
+可选：安装登录启动项：
+
+```bash
+codex-battery-login install
+```
+
+移除登录启动项：
+
+```bash
+codex-battery-login uninstall
+```
+
+### 源码安装
+
 ```bash
 git clone https://github.com/EOShoow/codex-battery.git
 cd codex-battery
