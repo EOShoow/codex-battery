@@ -30,7 +30,7 @@ Codex Battery 把 Codex 额度变成一个紧凑的菜单栏信号：
 - Codex desktop app，并且本机存在 `~/.codex` 状态
 
 ```bash
-git clone https://github.com/YOUR_NAME/codex-battery.git
+git clone https://github.com/EOShow/codex-battery.git
 cd codex-battery
 ./install.sh
 ```

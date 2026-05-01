@@ -30,7 +30,7 @@ Requirements:
 - Codex desktop app with local state under `~/.codex`
 
 ```bash
-git clone https://github.com/YOUR_NAME/codex-battery.git
+git clone https://github.com/EOShow/codex-battery.git
 cd codex-battery
 ./install.sh
 ```
@@ -128,4 +128,3 @@ Early release. Codex's local state format may change, so pull requests and issue
 ## License
 
 MIT
-
