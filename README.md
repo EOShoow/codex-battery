@@ -1,5 +1,7 @@
 # Codex Battery
 
+[中文说明](README.zh-CN.md)
+
 A tiny macOS menu bar battery for your Codex quota.
 
 Codex Battery turns Codex usage limits into a compact menu bar signal:
