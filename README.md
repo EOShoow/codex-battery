@@ -4,6 +4,8 @@
 
 A tiny macOS menu bar battery for your Codex quota.
 
+![Codex Battery menu bar screenshot](assets/codex-battery-en.svg)
+
 Codex Battery turns Codex usage limits into a compact menu bar signal:
 
 - Outer ring: weekly quota remaining

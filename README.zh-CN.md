@@ -2,6 +2,8 @@
 
 一个 macOS 菜单栏里的 Codex 额度电池。
 
+![Codex Battery 菜单栏截图](assets/codex-battery-zh.svg)
+
 你是不是总是担心 Codex 额度突然用完？
 
 你是不是一边让 agent 干活，一边忍不住反复点开“剩余额度”确认自己还能撑多久？
