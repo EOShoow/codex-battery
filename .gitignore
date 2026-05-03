@@ -3,5 +3,5 @@
 *.swp
 *.tmp
 .build/
+build/
 CodexQuota.app/
-

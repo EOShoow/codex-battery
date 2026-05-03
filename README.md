@@ -2,7 +2,9 @@
 
 [中文说明](README.zh-CN.md)
 
-A tiny macOS menu bar battery for your Codex quota.
+<img src="assets/app-icon.png" width="96" alt="Codex Battery app icon">
+
+A tiny macOS menu bar quota indicator for Codex.
 
 ![Codex Battery menu bar screenshot](assets/codex-battery-en.png)
 

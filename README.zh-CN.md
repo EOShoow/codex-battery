@@ -1,5 +1,7 @@
 # Codex Battery
 
+<img src="assets/app-icon.png" width="96" alt="Codex Battery 应用图标">
+
 一个常驻 macOS 菜单栏的 Codex 额度看板。
 
 ![Codex Battery 菜单栏截图](assets/codex-battery-zh.png)
