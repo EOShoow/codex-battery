@@ -494,6 +494,7 @@ if not latest:
 # should be monotonic, so prefer the highest recent value over a lower snapshot
 # that merely has a newer timestamp.
 fresh_cutoff = now - timedelta(minutes=15)
+now_epoch = now.timestamp()
 same_limit = [
     snap for snap in rate_snapshots
     if snap["ts"] >= fresh_cutoff
@@ -502,20 +503,34 @@ same_limit = [
 ]
 primary_candidates = [
     snap for snap in same_limit
-    if snap.get("primaryReset") == latest.get("primaryReset")
+    if snap.get("primaryReset") is not None
+    and float(snap.get("primaryReset") or 0) > now_epoch
     and snap.get("primaryUsed") is not None
 ]
 secondary_candidates = [
     snap for snap in same_limit
-    if snap.get("secondaryReset") == latest.get("secondaryReset")
+    if snap.get("secondaryReset") is not None
+    and float(snap.get("secondaryReset") or 0) > now_epoch
     and snap.get("secondaryUsed") is not None
 ]
+if not primary_candidates:
+    primary_candidates = [
+        snap for snap in same_limit
+        if snap.get("primaryReset") == latest.get("primaryReset")
+        and snap.get("primaryUsed") is not None
+    ]
+if not secondary_candidates:
+    secondary_candidates = [
+        snap for snap in same_limit
+        if snap.get("secondaryReset") == latest.get("secondaryReset")
+        and snap.get("secondaryUsed") is not None
+    ]
 if primary_candidates:
-    best_primary = max(primary_candidates, key=lambda snap: (float(snap.get("primaryUsed") or 0), snap["ts"]))
+    best_primary = max(primary_candidates, key=lambda snap: (float(snap.get("primaryReset") or 0), float(snap.get("primaryUsed") or 0), snap["ts"]))
     latest["primaryUsed"] = best_primary.get("primaryUsed")
     latest["primaryReset"] = best_primary.get("primaryReset")
 if secondary_candidates:
-    best_secondary = max(secondary_candidates, key=lambda snap: (float(snap.get("secondaryUsed") or 0), snap["ts"]))
+    best_secondary = max(secondary_candidates, key=lambda snap: (float(snap.get("secondaryReset") or 0), float(snap.get("secondaryUsed") or 0), snap["ts"]))
     latest["secondaryUsed"] = best_secondary.get("secondaryUsed")
     latest["secondaryReset"] = best_secondary.get("secondaryReset")
 
