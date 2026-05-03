@@ -93,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let forecastItem = NSMenuItem(title: "Forecast -", action: nil, keyEquivalent: "")
     private let topItem = NSMenuItem(title: "Top -", action: nil, keyEquivalent: "")
     private let activityItem = NSMenuItem(title: "Activity -", action: nil, keyEquivalent: "")
+    private let updatedItem = NSMenuItem(title: "Updated -", action: nil, keyEquivalent: "")
     private let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
@@ -123,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(forecastItem)
         menu.addItem(topItem)
         menu.addItem(activityItem)
+        menu.addItem(updatedItem)
         menu.addItem(.separator())
         menu.addItem(refreshItem)
         menu.addItem(quitItem)
@@ -140,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         forecastItem.title = t("预测 -", "Forecast -")
         topItem.title = "Top -"
         activityItem.title = t("后台活动 -", "Activity -")
+        updatedItem.title = t("更新于 -", "Updated -")
         DispatchQueue.global(qos: .utility).async {
             let info = Self.readQuota()
             DispatchQueue.main.async {
@@ -166,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forecastItem.title = t("预测 -", "Forecast -")
             topItem.title = "Top -"
             activityItem.title = t("后台活动 -", "Activity -")
+            updatedItem.title = t("更新于 -", "Updated -")
             iconView.tooltipText = message
             return
         }
@@ -188,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topThread = info.topThread ?? "-"
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
+        let updatedAt = formatUpdated(info.timestamp)
         let detail = useChinese ? """
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
@@ -195,6 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         周预测: \(weeklyPrediction)
         Top: \(topThread)  \(topThreadTokens)
         后台活动: \(activity)
+        更新于: \(updatedAt)
         """ : """
         5h left: \(fiveHour)%  \(primaryReset)
         1w left: \(week)%  \(secondaryReset)
@@ -202,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Weekly forecast: \(weeklyPrediction)
         Top: \(topThread)  \(topThreadTokens)
         Activity: \(activity)
+        Updated: \(updatedAt)
         """
         fiveHourItem.title = t("5小时剩余  \(fiveHour)%    \(primaryReset)", "5h left     \(fiveHour)%    \(primaryReset)")
         weekItem.title = t("1周剩余    \(week)%    \(secondaryReset)", "1w left     \(week)%    \(secondaryReset)")
@@ -209,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         forecastItem.title = t("周预测      \(weeklyPrediction)", "Forecast    \(weeklyPrediction)")
         topItem.title = "Top         \(topThread)    \(topThreadTokens)"
         activityItem.title = t("后台活动    \(activity)", "Activity    \(activity)")
+        updatedItem.title = t("更新于      \(updatedAt)", "Updated     \(updatedAt)")
         iconView.tooltipText = detail
     }
 
@@ -277,6 +285,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: useChinese ? "zh_CN" : "en_US_POSIX")
         formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : (useChinese ? "M月d日 HH:mm" : "MMM d HH:mm")
+        return formatter.string(from: date)
+    }
+
+    private func formatUpdated(_ timestamp: String?) -> String {
+        guard var timestamp, !timestamp.isEmpty else { return "-" }
+        if timestamp.hasSuffix("Z") {
+            timestamp = String(timestamp.dropLast()) + "+00:00"
+        }
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackParser = ISO8601DateFormatter()
+        fallbackParser.formatOptions = [.withInternetDateTime]
+        guard let date = parser.date(from: timestamp) ?? fallbackParser.date(from: timestamp) else { return "-" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: useChinese ? "zh_CN" : "en_US_POSIX")
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm:ss" : (useChinese ? "M月d日 HH:mm" : "MMM d HH:mm")
         return formatter.string(from: date)
     }
 
