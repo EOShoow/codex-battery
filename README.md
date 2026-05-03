@@ -10,7 +10,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 
 - Outer ring: weekly quota remaining
 - Inner ring: 5-hour quota remaining
-- Menu details: reset times, today's token burn, weekly budget forecast, and the top active Codex thread
+- Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, and recent background activity
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
 
@@ -121,6 +121,8 @@ Codex Battery refreshes:
 - Every 60 seconds when recent Codex activity is detected
 
 To keep power use low, it checks only the most recent active threads and reads the tail of each rollout log instead of scanning every log from the beginning.
+
+When background Codex work is still running, the menu shows an `Activity` line such as `2 thread(s) active in 2m`. That is a reminder that quota may keep moving even if you are not actively typing in the current thread.
 
 ## Accuracy
 

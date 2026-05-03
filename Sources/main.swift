@@ -92,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let todayItem = NSMenuItem(title: "Today -", action: nil, keyEquivalent: "")
     private let forecastItem = NSMenuItem(title: "Forecast -", action: nil, keyEquivalent: "")
     private let topItem = NSMenuItem(title: "Top -", action: nil, keyEquivalent: "")
+    private let activityItem = NSMenuItem(title: "Activity -", action: nil, keyEquivalent: "")
     private let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
@@ -121,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(todayItem)
         menu.addItem(forecastItem)
         menu.addItem(topItem)
+        menu.addItem(activityItem)
         menu.addItem(.separator())
         menu.addItem(refreshItem)
         menu.addItem(quitItem)
@@ -137,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         todayItem.title = t("今日 -", "Today -")
         forecastItem.title = t("预测 -", "Forecast -")
         topItem.title = "Top -"
+        activityItem.title = t("后台活动 -", "Activity -")
         DispatchQueue.global(qos: .utility).async {
             let info = Self.readQuota()
             DispatchQueue.main.async {
@@ -162,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             todayItem.title = t("今日 -", "Today -")
             forecastItem.title = t("预测 -", "Forecast -")
             topItem.title = "Top -"
+            activityItem.title = t("后台活动 -", "Activity -")
             iconView.tooltipText = message
             return
         }
@@ -183,24 +187,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let todayFlag = formatTodayFlag(info.todayVs3DayAvg)
         let topThread = info.topThread ?? "-"
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
+        let activity = formatActivity(info)
         let detail = useChinese ? """
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
         今日: \(today)  \(ratio)\(todayFlag)
         周预测: \(weeklyPrediction)
         Top: \(topThread)  \(topThreadTokens)
+        后台活动: \(activity)
         """ : """
         5h left: \(fiveHour)%  \(primaryReset)
         1w left: \(week)%  \(secondaryReset)
         Today: \(today)  \(ratio)\(todayFlag)
         Weekly forecast: \(weeklyPrediction)
         Top: \(topThread)  \(topThreadTokens)
+        Activity: \(activity)
         """
         fiveHourItem.title = t("5小时剩余  \(fiveHour)%    \(primaryReset)", "5h left     \(fiveHour)%    \(primaryReset)")
         weekItem.title = t("1周剩余    \(week)%    \(secondaryReset)", "1w left     \(week)%    \(secondaryReset)")
         todayItem.title = t("今日消耗    \(today)    \(ratio)\(todayFlag)", "Today burn  \(today)    \(ratio)\(todayFlag)")
         forecastItem.title = t("周预测      \(weeklyPrediction)", "Forecast    \(weeklyPrediction)")
         topItem.title = "Top         \(topThread)    \(topThreadTokens)"
+        activityItem.title = t("后台活动    \(activity)", "Activity    \(activity)")
         iconView.tooltipText = detail
     }
 
@@ -331,6 +339,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return useChinese ? "    偏快" : "    fast"
         }
         return ""
+    }
+
+    private func formatActivity(_ info: QuotaInfo) -> String {
+        let count = info.activeThreads ?? 0
+        let seconds = info.activeWindowSeconds ?? 120
+        if count <= 0 {
+            return t("空闲", "idle")
+        }
+        let minutes = max(1, Int(round(Double(seconds) / 60)))
+        return t("近\(minutes)分钟 \(count) 个线程仍在消耗", "\(count) thread(s) active in \(minutes)m")
     }
 
     @objc private func quit() {
