@@ -71,13 +71,13 @@ cd codex-battery
 应用会安装到：
 
 ```text
-~/Applications/CodexQuota.app
+~/Applications/CodexBattery.app
 ```
 
 登录启动项会安装到：
 
 ```text
-~/Library/LaunchAgents/local.codex.quota.menu.plist
+~/Library/LaunchAgents/local.codex.battery.menu.plist
 ```
 
 ## 菜单怎么读
@@ -141,7 +141,7 @@ git pull
 
 ```bash
 ./build.sh
-open ~/Applications/CodexQuota.app
+open ~/Applications/CodexBattery.app
 ```
 
 ## 状态

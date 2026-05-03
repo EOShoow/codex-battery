@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>CodexQuota</string>
+  <string>CodexBattery</string>
   <key>CFBundleIdentifier</key>
-  <string>local.codex.quota.menu</string>
+  <string>local.codex.battery.menu</string>
   <key>CFBundleName</key>
   <string>Codex Battery</string>
   <key>CFBundleDisplayName</key>

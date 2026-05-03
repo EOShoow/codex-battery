@@ -63,13 +63,13 @@ cd codex-battery
 The app is built to:
 
 ```text
-~/Applications/CodexQuota.app
+~/Applications/CodexBattery.app
 ```
 
 The login item is installed at:
 
 ```text
-~/Library/LaunchAgents/local.codex.quota.menu.plist
+~/Library/LaunchAgents/local.codex.battery.menu.plist
 ```
 
 ## Reading The Menu
@@ -143,7 +143,7 @@ git pull
 
 ```bash
 ./build.sh
-open ~/Applications/CodexQuota.app
+open ~/Applications/CodexBattery.app
 ```
 
 ## Status
