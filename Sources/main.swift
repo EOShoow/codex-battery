@@ -397,6 +397,7 @@ latest = None
 daily = defaultdict(Counter)
 top_by_thread = defaultdict(Counter)
 weekly_points = []
+rate_snapshots = []
 
 for thread_id, rollout_path, title, model, effort in rows:
     if not rollout_path:
@@ -432,12 +433,27 @@ for thread_id, rollout_path, title, model, effort in rows:
                 continue
             seen.add(state)
             if rate_limits:
+                primary = rate_limits.get("primary") or {}
                 secondary = rate_limits.get("secondary") or {}
+                rate_snapshots.append({
+                    "ts": ts,
+                    "timestamp": obj.get("timestamp"),
+                    "planType": rate_limits.get("plan_type"),
+                    "limitId": rate_limits.get("limit_id"),
+                    "limitName": rate_limits.get("limit_name"),
+                    "primaryUsed": primary.get("used_percent"),
+                    "secondaryUsed": secondary.get("used_percent"),
+                    "primaryReset": primary.get("resets_at"),
+                    "secondaryReset": secondary.get("resets_at"),
+                    "title": title,
+                    "model": model,
+                    "effort": effort,
+                    "totalTokens": total.get("total_tokens")
+                })
                 used = secondary.get("used_percent")
                 if used is not None:
                     weekly_points.append((ts, float(used)))
                 if latest is None or ts > latest["ts"]:
-                    primary = rate_limits.get("primary") or {}
                     latest = {
                         "ts": ts,
                         "timestamp": obj.get("timestamp"),
@@ -472,6 +488,36 @@ for thread_id, rollout_path, title, model, effort in rows:
 
 if not latest:
     fail("No recent Codex rate-limit data found")
+
+# Multiple active Codex threads can write rate-limit snapshots with the same
+# reset window but stale used_percent values. Within one reset window usage
+# should be monotonic, so prefer the highest recent value over a lower snapshot
+# that merely has a newer timestamp.
+fresh_cutoff = now - timedelta(minutes=15)
+same_limit = [
+    snap for snap in rate_snapshots
+    if snap["ts"] >= fresh_cutoff
+    and snap.get("planType") == latest.get("planType")
+    and snap.get("limitId") == latest.get("limitId")
+]
+primary_candidates = [
+    snap for snap in same_limit
+    if snap.get("primaryReset") == latest.get("primaryReset")
+    and snap.get("primaryUsed") is not None
+]
+secondary_candidates = [
+    snap for snap in same_limit
+    if snap.get("secondaryReset") == latest.get("secondaryReset")
+    and snap.get("secondaryUsed") is not None
+]
+if primary_candidates:
+    best_primary = max(primary_candidates, key=lambda snap: (float(snap.get("primaryUsed") or 0), snap["ts"]))
+    latest["primaryUsed"] = best_primary.get("primaryUsed")
+    latest["primaryReset"] = best_primary.get("primaryReset")
+if secondary_candidates:
+    best_secondary = max(secondary_candidates, key=lambda snap: (float(snap.get("secondaryUsed") or 0), snap["ts"]))
+    latest["secondaryUsed"] = best_secondary.get("secondaryUsed")
+    latest["secondaryReset"] = best_secondary.get("secondaryReset")
 
 today_tokens = int(daily[today]["total_tokens"])
 previous_active = [
