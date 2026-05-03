@@ -80,6 +80,14 @@ cd codex-battery
 ~/Library/LaunchAgents/local.codex.battery.menu.plist
 ```
 
+### 关于“身份不明的开发者”
+
+Codex Battery 目前还没有使用付费 Apple Developer ID 签名，所以 macOS 可能会在“登录项”或 Gatekeeper 提示里显示“身份不明的开发者”。
+
+这个提示说的是 Apple 代码签名身份，不等于这个工具会联网或上传数据。项目是开源的，只读取本机 `~/.codex` 下的 Codex 状态和日志。
+
+如果你比较谨慎，可以先看源码，再用 `./install.sh` 从源码安装。当前 Homebrew formula 也是从这个仓库拉源码后在本机编译，不是下载闭源二进制。
+
 ## 菜单怎么读
 
 示例：
