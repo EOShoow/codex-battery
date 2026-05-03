@@ -123,6 +123,20 @@ Codex Battery 会在这些时机刷新：
 
 适合当快速仪表盘，不适合作为严格账单来源。
 
+## 兼容性
+
+Codex Battery 依赖 Codex Desktop 的本地状态格式，主要是 `~/.codex/state_5.sqlite`，以及这个数据库引用的 rollout 日志。
+
+这不是 Codex 官方公开 API。如果未来 Codex Desktop 升级后修改了本地数据库结构、日志路径布局，或者 `token_count` 事件格式，Codex Battery 可能会暂时读不到数据，需要更新后才能恢复。
+
+当前已知基线：
+
+- 已在 2026-05-03 的 Codex Desktop 本地状态格式上验证
+- 读取 `~/.codex/state_5.sqlite`
+- 读取包含 `token_count.rate_limits` 的近期 rollout 日志
+
+如果 Codex 升级后失效，请开 issue，并附上 Codex 版本、macOS 版本、菜单里显示的错误文本。不要直接粘贴私密 rollout 日志；如果必须提供，请先自行检查和脱敏。
+
 ## 隐私
 
 Codex Battery 不上传任何数据，也不发起网络请求。

@@ -125,6 +125,20 @@ This is an unofficial local estimator. It reads Codex state and rollout logs fro
 
 Treat it as a fast dashboard, not an accounting source of truth.
 
+## Compatibility
+
+Codex Battery depends on Codex Desktop's local state format, especially `~/.codex/state_5.sqlite` and the rollout log entries referenced by that database.
+
+This is not an official Codex API. If a future Codex Desktop update changes the local database schema, log path layout, or `token_count` event format, Codex Battery may stop showing data until it is updated.
+
+Current known baseline:
+
+- Verified with Codex Desktop local state as of 2026-05-03
+- Reads `~/.codex/state_5.sqlite`
+- Reads recent rollout logs that contain `token_count.rate_limits`
+
+If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
+
 ## Privacy
 
 Codex Battery does not upload anything and does not make network requests.
