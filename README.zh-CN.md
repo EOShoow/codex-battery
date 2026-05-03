@@ -1,6 +1,6 @@
 # Codex Battery
 
-一个 macOS 菜单栏里的 Codex 额度电池。
+一个常驻 macOS 菜单栏的 Codex 额度看板。
 
 ![Codex Battery 菜单栏截图](assets/codex-battery-zh.png)
 
