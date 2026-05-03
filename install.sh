@@ -12,6 +12,7 @@ OLD_LABEL="local.codex.quota.menu"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 launchctl bootout "gui/$(id -u)/$OLD_LABEL" 2>/dev/null || true
+pkill -f "$APP/Contents/MacOS/CodexBattery" 2>/dev/null || true
 rm -f "$OLD_PLIST"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

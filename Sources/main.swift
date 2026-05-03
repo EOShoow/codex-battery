@@ -79,6 +79,8 @@ struct QuotaInfo: Decodable {
     let risk: String?
     let topThread: String?
     let topThreadTokens: Int?
+    let activeThreads: Int?
+    let activeWindowSeconds: Int?
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -95,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
     private var refreshTimer: Timer?
     private var isRefreshing = false
+    private var nextRefreshInterval: TimeInterval = 300
 
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
@@ -124,13 +127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         refreshNow()
-        refreshTimer = Timer.scheduledTimer(
-            timeInterval: 300,
-            target: self,
-            selector: #selector(refreshNow),
-            userInfo: nil,
-            repeats: true
-        )
     }
 
     @objc private func refreshNow() {
@@ -146,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 self.render(info)
                 self.isRefreshing = false
+                self.scheduleNextRefresh(for: info)
             }
         }
     }
@@ -207,6 +204,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         iconView.tooltipText = detail
     }
 
+    private func scheduleNextRefresh(for info: QuotaInfo) {
+        refreshTimer?.invalidate()
+        let activeThreads = info.activeThreads ?? 0
+        nextRefreshInterval = activeThreads > 0 ? 60 : 300
+        refreshTimer = Timer.scheduledTimer(
+            timeInterval: nextRefreshInterval,
+            target: self,
+            selector: #selector(refreshNow),
+            userInfo: nil,
+            repeats: false
+        )
+    }
+
     private static func readQuota() -> QuotaInfo {
         let script = pythonScript
         let process = Process()
@@ -246,7 +256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 weeklyDaysEarly: nil,
                 risk: nil,
                 topThread: nil,
-                topThreadTokens: nil
+                topThreadTokens: nil,
+                activeThreads: nil,
+                activeWindowSeconds: nil
             )
         }
     }
@@ -340,6 +352,7 @@ db_path = home / ".codex" / "state_5.sqlite"
 tz = timezone(timedelta(hours=8))
 now = datetime.now(tz)
 today = now.date()
+ACTIVE_WINDOW_SECONDS = 120
 
 def fail(message):
     print(json.dumps({"ok": False, "error": message}))
@@ -379,6 +392,14 @@ def parse_ts(value):
 def compact_title(value):
     return (value or "Unknown").replace("\n", " ")[:28]
 
+def read_recent_json(path, max_lines=1200):
+    lines = []
+    for line in reversed_lines(path):
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return reversed(lines)
+
 try:
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     rows = con.execute(
@@ -387,7 +408,7 @@ try:
         FROM threads
         WHERE rollout_path IS NOT NULL
         ORDER BY updated_at DESC
-        LIMIT 50
+        LIMIT 20
         """
     ).fetchall()
 except Exception as exc:
@@ -398,6 +419,7 @@ daily = defaultdict(Counter)
 top_by_thread = defaultdict(Counter)
 weekly_points = []
 rate_snapshots = []
+active_thread_ids = set()
 
 for thread_id, rollout_path, title, model, effort in rows:
     if not rollout_path:
@@ -407,7 +429,7 @@ for thread_id, rollout_path, title, model, effort in rows:
         continue
     events = []
     try:
-        for line in path.read_text(errors="ignore").splitlines():
+        for line in read_recent_json(path):
             try:
                 obj = json.loads(line)
             except Exception:
@@ -418,6 +440,8 @@ for thread_id, rollout_path, title, model, effort in rows:
             ts = parse_ts(obj.get("timestamp"))
             if not ts:
                 continue
+            if ts >= now - timedelta(seconds=ACTIVE_WINDOW_SECONDS):
+                active_thread_ids.add(thread_id)
             rate_limits = payload.get("rate_limits")
             info = payload.get("info") or {}
             total = info.get("total_token_usage") or {}
@@ -610,7 +634,9 @@ out.update({
     "weeklyDaysEarly": weekly_days_early,
     "risk": risk,
     "topThread": top_thread,
-    "topThreadTokens": top_thread_tokens
+    "topThreadTokens": top_thread_tokens,
+    "activeThreads": len(active_thread_ids),
+    "activeWindowSeconds": ACTIVE_WINDOW_SECONDS
 })
 print(json.dumps(out, ensure_ascii=False))
 raise SystemExit(0)

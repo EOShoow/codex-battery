@@ -115,9 +115,12 @@ Top         PoQ Mac 复刻  91.7M
 Codex Battery refreshes:
 
 - At startup
-- Every 5 minutes
 - When you open the menu
 - When you click `Refresh`
+- Every 5 minutes while idle
+- Every 60 seconds when recent Codex activity is detected
+
+To keep power use low, it checks only the most recent active threads and reads the tail of each rollout log instead of scanning every log from the beginning.
 
 ## Accuracy
 
