@@ -2,7 +2,7 @@
 
 一个 macOS 菜单栏里的 Codex 额度电池。
 
-![Codex Battery 菜单栏截图](assets/codex-battery-zh.svg)
+![Codex Battery 菜单栏截图](assets/codex-battery-zh.png)
 
 你是不是总是担心 Codex 额度突然用完？
 
