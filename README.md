@@ -74,6 +74,8 @@ The login item is installed at:
 
 ### About the "unidentified developer" warning
 
+![macOS unidentified developer warning](assets/unsigned-developer-warning-en.png)
+
 Codex Battery is not signed with a paid Apple Developer ID yet, so macOS may show it as coming from an "unidentified developer" in Login Items or Gatekeeper prompts.
 
 That warning is about Apple code-signing identity, not about network access or data collection. This project is open source, installs from this repository, and reads only local Codex state under `~/.codex`.

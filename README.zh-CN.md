@@ -82,6 +82,8 @@ cd codex-battery
 
 ### 关于“身份不明的开发者”
 
+![macOS 身份不明的开发者提示](assets/unsigned-developer-warning-zh.png)
+
 Codex Battery 目前还没有使用付费 Apple Developer ID 签名，所以 macOS 可能会在“登录项”或 Gatekeeper 提示里显示“身份不明的开发者”。
 
 这个提示说的是 Apple 代码签名身份，不等于这个工具会联网或上传数据。项目是开源的，只读取本机 `~/.codex` 下的 Codex 状态和日志。
