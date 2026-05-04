@@ -102,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isRefreshing = false
     private var nextRefreshInterval: TimeInterval = 300
     private var lastCheckedAt: Date?
+    private var lastGoodInfo: QuotaInfo?
 
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
@@ -149,7 +150,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .utility).async {
             let info = Self.readQuota()
             DispatchQueue.main.async {
-                self.render(info)
+                if info.ok {
+                    self.lastGoodInfo = info
+                    self.render(info)
+                } else if let cached = self.lastGoodInfo {
+                    self.render(cached)
+                    self.setInfoItem(self.updatedItem, label: self.t("旧数据", "Stale"), value: self.formatUpdated(self.lastCheckedAt))
+                    self.iconView.tooltipText = info.error ?? self.t("读取失败，显示上次成功数据", "Read failed, showing last successful data")
+                } else {
+                    self.render(info)
+                }
                 self.isRefreshing = false
                 self.scheduleNextRefresh(for: info)
             }
@@ -487,19 +497,27 @@ def read_recent_json(path, max_lines=1200):
             break
     return reversed(lines)
 
-try:
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    rows = con.execute(
-        """
-        SELECT id, rollout_path, title, model, reasoning_effort
-        FROM threads
-        WHERE rollout_path IS NOT NULL
-        ORDER BY updated_at DESC
-        LIMIT 20
-        """
-    ).fetchall()
-except Exception as exc:
-    fail(f"Cannot read Codex state: {exc}")
+last_db_error = None
+rows = None
+for attempt in range(6):
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        rows = con.execute(
+            """
+            SELECT id, rollout_path, title, model, reasoning_effort
+            FROM threads
+            WHERE rollout_path IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 20
+            """
+        ).fetchall()
+        break
+    except Exception as exc:
+        last_db_error = exc
+        time.sleep(0.15 * (attempt + 1))
+
+if rows is None:
+    fail(f"Cannot read Codex state after retry: {last_db_error}")
 
 latest = None
 daily = defaultdict(Counter)
