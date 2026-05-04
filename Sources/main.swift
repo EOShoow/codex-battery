@@ -84,7 +84,7 @@ struct QuotaInfo: Decodable {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private static let menuWidth: CGFloat = 420
+    private static let menuWidth: CGFloat = 460
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -225,26 +225,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setInfoItem(_ item: NSMenuItem, label: String, value: String, detail: String? = nil) {
         let row = NSView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 30))
-        let labelField = makeLabel(label, frame: NSRect(x: 16, y: 5, width: 92, height: 20), color: .secondaryLabelColor)
-        let valueWidth: CGFloat = detail == nil ? 282 : 76
-        let valueField = makeLabel(value, frame: NSRect(x: 118, y: 5, width: valueWidth, height: 20), color: .labelColor)
+        let tooltip = detail.map { "\(label)  \(value)  \($0)" } ?? "\(label)  \(value)"
+        row.toolTip = tooltip
+
+        let labelField = makeLabel(label, frame: NSRect(x: 16, y: 5, width: 90, height: 20))
+        let valueWidth: CGFloat = detail == nil ? 326 : 150
+        let valueField = makeLabel(value, frame: NSRect(x: 112, y: 5, width: valueWidth, height: 20))
         valueField.lineBreakMode = .byTruncatingTail
+        valueField.toolTip = value
         row.addSubview(labelField)
         row.addSubview(valueField)
 
         if let detail {
-            let detailField = makeLabel(detail, frame: NSRect(x: 204, y: 5, width: 200, height: 20), color: .secondaryLabelColor)
+            let detailField = makeLabel(detail, frame: NSRect(x: 270, y: 5, width: 174, height: 20))
             detailField.lineBreakMode = .byTruncatingTail
+            detailField.toolTip = detail
             row.addSubview(detailField)
         }
         item.view = row
     }
 
-    private func makeLabel(_ text: String, frame: NSRect, color: NSColor) -> NSTextField {
+    private func makeLabel(_ text: String, frame: NSRect) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.frame = frame
         field.font = .menuFont(ofSize: NSFont.systemFontSize)
-        field.textColor = color
+        field.textColor = .labelColor
         field.alignment = .left
         return field
     }
