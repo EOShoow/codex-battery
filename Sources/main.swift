@@ -84,6 +84,7 @@ struct QuotaInfo: Decodable {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private static let menuWidth: CGFloat = 360
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -136,15 +137,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func refreshNow() {
         lastCheckedAt = Date()
-        updatedItem.title = t("更新于      \(formatUpdated(lastCheckedAt))", "Updated     \(formatUpdated(lastCheckedAt))")
+        setInfoItem(updatedItem, label: t("更新于", "Updated"), value: formatUpdated(lastCheckedAt))
         guard !isRefreshing else { return }
         isRefreshing = true
-        fiveHourItem.title = t("刷新中...", "Refreshing...")
-        weekItem.title = t("1周 -", "1w -")
-        todayItem.title = t("今日 -", "Today -")
-        forecastItem.title = t("预测 -", "Forecast -")
-        topItem.title = "Top -"
-        activityItem.title = t("后台活动 -", "Activity -")
+        setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: t("刷新中...", "Refreshing..."))
+        setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
+        setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
+        setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
+        setInfoItem(topItem, label: "Top", value: "-")
+        setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
         DispatchQueue.global(qos: .utility).async {
             let info = Self.readQuota()
             DispatchQueue.main.async {
@@ -165,13 +166,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             iconView.fiveHour = 0
             iconView.week = 0
             iconView.needsDisplay = true
-            fiveHourItem.title = message
-            weekItem.title = t("1周 -", "1w -")
-            todayItem.title = t("今日 -", "Today -")
-            forecastItem.title = t("预测 -", "Forecast -")
-            topItem.title = "Top -"
-            activityItem.title = t("后台活动 -", "Activity -")
-            updatedItem.title = t("更新于 -", "Updated -")
+            setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
+            setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
+            setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
+            setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
+            setInfoItem(topItem, label: "Top", value: "-")
+            setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
+            setInfoItem(updatedItem, label: t("更新于", "Updated"), value: "-")
             iconView.tooltipText = message
             return
         }
@@ -212,20 +213,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Activity: \(activity)
         Updated: \(updatedAt)
         """
-        fiveHourItem.title = t("5小时剩余  \(fiveHour)%    \(primaryReset)", "5h left     \(fiveHour)%    \(primaryReset)")
-        weekItem.title = t("1周剩余    \(week)%    \(secondaryReset)", "1w left     \(week)%    \(secondaryReset)")
-        todayItem.title = t("今日消耗    \(today)    \(ratio)\(todayFlag)", "Today burn  \(today)    \(ratio)\(todayFlag)")
-        forecastItem.title = t("周预测      \(weeklyPrediction)", "Forecast    \(weeklyPrediction)")
-        topItem.title = "Top         \(topThread)    \(topThreadTokens)"
-        activityItem.title = t("后台活动    \(activity)", "Activity    \(activity)")
-        updatedItem.title = t("更新于      \(updatedAt)", "Updated     \(updatedAt)")
+        setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
+        setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
+        setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today, detail: "\(ratio)\(todayFlag)")
+        setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: weeklyPrediction)
+        setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
+        setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
+        setInfoItem(updatedItem, label: t("更新于", "Updated"), value: updatedAt)
         iconView.tooltipText = detail
     }
 
-    private func configureActionItem(_ item: NSMenuItem, title: String, shortcut: String, action: Selector) {
-        let row = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 28))
+    private func setInfoItem(_ item: NSMenuItem, label: String, value: String, detail: String? = nil) {
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 30))
+        let labelField = makeLabel(label, frame: NSRect(x: 16, y: 5, width: 105, height: 20), color: .secondaryLabelColor)
+        let valueWidth: CGFloat = detail == nil ? 218 : 112
+        let valueField = makeLabel(value, frame: NSRect(x: 135, y: 5, width: valueWidth, height: 20), color: .labelColor)
+        valueField.lineBreakMode = .byTruncatingTail
+        row.addSubview(labelField)
+        row.addSubview(valueField)
 
-        let button = NSButton(frame: NSRect(x: 16, y: 0, width: 220, height: 28))
+        if let detail {
+            let detailField = makeLabel(detail, frame: NSRect(x: 258, y: 5, width: 86, height: 20), color: .secondaryLabelColor)
+            detailField.lineBreakMode = .byTruncatingTail
+            row.addSubview(detailField)
+        }
+        item.view = row
+    }
+
+    private func makeLabel(_ text: String, frame: NSRect, color: NSColor) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.frame = frame
+        field.font = .menuFont(ofSize: NSFont.systemFontSize)
+        field.textColor = color
+        field.alignment = .left
+        return field
+    }
+
+    private func configureActionItem(_ item: NSMenuItem, title: String, shortcut: String, action: Selector) {
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 30))
+
+        let button = NSButton(frame: NSRect(x: 16, y: 1, width: 260, height: 28))
         button.title = title
         button.target = self
         button.action = action
@@ -241,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shortcutLabel.textColor = .secondaryLabelColor
         shortcutLabel.font = .menuFont(ofSize: NSFont.systemFontSize)
         shortcutLabel.alignment = .right
-        shortcutLabel.frame = NSRect(x: row.bounds.width - 70, y: 4, width: 54, height: 20)
+        shortcutLabel.frame = NSRect(x: row.bounds.width - 70, y: 5, width: 54, height: 20)
         shortcutLabel.autoresizingMask = [.minXMargin]
 
         row.addSubview(button)
