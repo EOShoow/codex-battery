@@ -94,12 +94,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let topItem = NSMenuItem(title: "Top -", action: nil, keyEquivalent: "")
     private let activityItem = NSMenuItem(title: "Activity -", action: nil, keyEquivalent: "")
     private let updatedItem = NSMenuItem(title: "Updated -", action: nil, keyEquivalent: "")
-    private let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
+    private let refreshItem = NSMenuItem(title: "Refresh", action: nil, keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
     private var refreshTimer: Timer?
     private var isRefreshing = false
     private var nextRefreshInterval: TimeInterval = 300
+    private var lastCheckedAt: Date?
 
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
@@ -115,8 +116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.toolTip = "Codex Battery"
         }
 
-        refreshItem.target = self
+        configureRefreshItem()
         quitItem.target = self
+        quitItem.title = t("退出", "Quit")
         menu.delegate = self
         menu.addItem(fiveHourItem)
         menu.addItem(weekItem)
@@ -134,6 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func refreshNow() {
+        lastCheckedAt = Date()
+        updatedItem.title = t("更新于      \(formatUpdated(lastCheckedAt))", "Updated     \(formatUpdated(lastCheckedAt))")
         guard !isRefreshing else { return }
         isRefreshing = true
         fiveHourItem.title = t("刷新中...", "Refreshing...")
@@ -142,7 +146,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         forecastItem.title = t("预测 -", "Forecast -")
         topItem.title = "Top -"
         activityItem.title = t("后台活动 -", "Activity -")
-        updatedItem.title = t("更新于 -", "Updated -")
         DispatchQueue.global(qos: .utility).async {
             let info = Self.readQuota()
             DispatchQueue.main.async {
@@ -192,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topThread = info.topThread ?? "-"
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
-        let updatedAt = formatUpdated(info.timestamp)
+        let updatedAt = formatUpdated(lastCheckedAt)
         let detail = useChinese ? """
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
@@ -218,6 +221,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         activityItem.title = t("后台活动    \(activity)", "Activity    \(activity)")
         updatedItem.title = t("更新于      \(updatedAt)", "Updated     \(updatedAt)")
         iconView.tooltipText = detail
+    }
+
+    private func configureRefreshItem() {
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 34))
+
+        let button = NSButton(frame: row.bounds)
+        button.title = t("刷新", "Refresh")
+        button.target = self
+        button.action = #selector(refreshNow)
+        button.isBordered = false
+        button.alignment = .left
+        button.font = .menuFont(ofSize: NSFont.systemFontSize)
+        button.bezelStyle = .regularSquare
+        button.setButtonType(.momentaryChange)
+        button.autoresizingMask = [.width, .height]
+        button.contentTintColor = .labelColor
+
+        let shortcut = NSTextField(labelWithString: "⌘ R")
+        shortcut.textColor = .secondaryLabelColor
+        shortcut.font = .menuFont(ofSize: NSFont.systemFontSize)
+        shortcut.alignment = .right
+        shortcut.frame = NSRect(x: row.bounds.width - 78, y: 7, width: 58, height: 20)
+        shortcut.autoresizingMask = [.minXMargin]
+
+        row.addSubview(button)
+        row.addSubview(shortcut)
+        refreshItem.view = row
     }
 
     private func scheduleNextRefresh(for info: QuotaInfo) {
@@ -288,16 +318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return formatter.string(from: date)
     }
 
-    private func formatUpdated(_ timestamp: String?) -> String {
-        guard var timestamp, !timestamp.isEmpty else { return "-" }
-        if timestamp.hasSuffix("Z") {
-            timestamp = String(timestamp.dropLast()) + "+00:00"
-        }
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackParser = ISO8601DateFormatter()
-        fallbackParser.formatOptions = [.withInternetDateTime]
-        guard let date = parser.date(from: timestamp) ?? fallbackParser.date(from: timestamp) else { return "-" }
+    private func formatUpdated(_ date: Date?) -> String {
+        guard let date else { return "-" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: useChinese ? "zh_CN" : "en_US_POSIX")
         formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm:ss" : (useChinese ? "M月d日 HH:mm" : "MMM d HH:mm")
