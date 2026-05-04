@@ -116,9 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.toolTip = "Codex Battery"
         }
 
-        configureRefreshItem()
-        quitItem.target = self
-        quitItem.title = t("退出", "Quit")
+        configureActionItem(refreshItem, title: t("刷新", "Refresh"), shortcut: "⌘ R", action: #selector(refreshNow))
+        configureActionItem(quitItem, title: t("退出", "Quit"), shortcut: "⌘ Q", action: #selector(quit))
         menu.delegate = self
         menu.addItem(fiveHourItem)
         menu.addItem(weekItem)
@@ -223,13 +222,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         iconView.tooltipText = detail
     }
 
-    private func configureRefreshItem() {
-        let row = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 34))
+    private func configureActionItem(_ item: NSMenuItem, title: String, shortcut: String, action: Selector) {
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 28))
 
-        let button = NSButton(frame: row.bounds)
-        button.title = t("刷新", "Refresh")
+        let button = NSButton(frame: NSRect(x: 16, y: 0, width: 220, height: 28))
+        button.title = title
         button.target = self
-        button.action = #selector(refreshNow)
+        button.action = action
         button.isBordered = false
         button.alignment = .left
         button.font = .menuFont(ofSize: NSFont.systemFontSize)
@@ -238,16 +237,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.autoresizingMask = [.width, .height]
         button.contentTintColor = .labelColor
 
-        let shortcut = NSTextField(labelWithString: "⌘ R")
-        shortcut.textColor = .secondaryLabelColor
-        shortcut.font = .menuFont(ofSize: NSFont.systemFontSize)
-        shortcut.alignment = .right
-        shortcut.frame = NSRect(x: row.bounds.width - 78, y: 7, width: 58, height: 20)
-        shortcut.autoresizingMask = [.minXMargin]
+        let shortcutLabel = NSTextField(labelWithString: shortcut)
+        shortcutLabel.textColor = .secondaryLabelColor
+        shortcutLabel.font = .menuFont(ofSize: NSFont.systemFontSize)
+        shortcutLabel.alignment = .right
+        shortcutLabel.frame = NSRect(x: row.bounds.width - 70, y: 4, width: 54, height: 20)
+        shortcutLabel.autoresizingMask = [.minXMargin]
 
         row.addSubview(button)
-        row.addSubview(shortcut)
-        refreshItem.view = row
+        row.addSubview(shortcutLabel)
+        item.view = row
     }
 
     private func scheduleNextRefresh(for info: QuotaInfo) {
