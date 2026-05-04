@@ -117,8 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.toolTip = "Codex Battery"
         }
 
-        configureActionItem(refreshItem, title: t("刷新", "Refresh"), shortcut: "⌘ R", action: #selector(refreshNow))
-        configureActionItem(quitItem, title: t("退出", "Quit"), shortcut: "⌘ Q", action: #selector(quit))
+        configureActionItem(refreshItem, title: t("刷新", "Refresh"), action: #selector(refreshNow))
+        configureActionItem(quitItem, title: t("退出", "Quit"), action: #selector(quit))
         menu.delegate = self
         menu.addItem(fiveHourItem)
         menu.addItem(weekItem)
@@ -249,10 +249,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return field
     }
 
-    private func configureActionItem(_ item: NSMenuItem, title: String, shortcut: String, action: Selector) {
+    private func configureActionItem(_ item: NSMenuItem, title: String, action: Selector) {
         let row = NSView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 30))
 
-        let button = NSButton(frame: NSRect(x: 16, y: 1, width: 260, height: 28))
+        let button = NSButton(frame: NSRect(x: 16, y: 1, width: Self.menuWidth - 32, height: 28))
         button.title = title
         button.target = self
         button.action = action
@@ -264,15 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.autoresizingMask = [.width, .height]
         button.contentTintColor = .labelColor
 
-        let shortcutLabel = NSTextField(labelWithString: shortcut)
-        shortcutLabel.textColor = .secondaryLabelColor
-        shortcutLabel.font = .menuFont(ofSize: NSFont.systemFontSize)
-        shortcutLabel.alignment = .right
-        shortcutLabel.frame = NSRect(x: row.bounds.width - 70, y: 5, width: 54, height: 20)
-        shortcutLabel.autoresizingMask = [.minXMargin]
-
         row.addSubview(button)
-        row.addSubview(shortcutLabel)
         item.view = row
     }
 
