@@ -84,7 +84,7 @@ struct QuotaInfo: Decodable {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private static let menuWidth: CGFloat = 360
+    private static let menuWidth: CGFloat = 420
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -225,15 +225,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setInfoItem(_ item: NSMenuItem, label: String, value: String, detail: String? = nil) {
         let row = NSView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 30))
-        let labelField = makeLabel(label, frame: NSRect(x: 16, y: 5, width: 105, height: 20), color: .secondaryLabelColor)
-        let valueWidth: CGFloat = detail == nil ? 218 : 112
-        let valueField = makeLabel(value, frame: NSRect(x: 135, y: 5, width: valueWidth, height: 20), color: .labelColor)
+        let labelField = makeLabel(label, frame: NSRect(x: 16, y: 5, width: 92, height: 20), color: .secondaryLabelColor)
+        let valueWidth: CGFloat = detail == nil ? 282 : 76
+        let valueField = makeLabel(value, frame: NSRect(x: 118, y: 5, width: valueWidth, height: 20), color: .labelColor)
         valueField.lineBreakMode = .byTruncatingTail
         row.addSubview(labelField)
         row.addSubview(valueField)
 
         if let detail {
-            let detailField = makeLabel(detail, frame: NSRect(x: 258, y: 5, width: 86, height: 20), color: .secondaryLabelColor)
+            let detailField = makeLabel(detail, frame: NSRect(x: 204, y: 5, width: 200, height: 20), color: .secondaryLabelColor)
             detailField.lineBreakMode = .byTruncatingTail
             row.addSubview(detailField)
         }
