@@ -289,8 +289,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func scheduleNextRefresh(for info: QuotaInfo) {
         refreshTimer?.invalidate()
-        let activeThreads = info.activeThreads ?? 0
-        nextRefreshInterval = activeThreads > 0 ? 60 : 300
+        if !info.ok {
+            // Stale data is worse than a slightly more frequent retry. Codex
+            // can briefly lock or lag its local database while writing events.
+            nextRefreshInterval = 15
+        } else {
+            let activeThreads = info.activeThreads ?? 0
+            nextRefreshInterval = activeThreads > 0 ? 60 : 300
+        }
         refreshTimer = Timer.scheduledTimer(
             timeInterval: nextRefreshInterval,
             target: self,
