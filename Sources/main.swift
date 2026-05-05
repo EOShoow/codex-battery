@@ -187,8 +187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        let fiveHour = max(0, 100 - Int(round(info.primaryUsed ?? 0)))
-        let week = max(0, 100 - Int(round(info.secondaryUsed ?? 0)))
+        let primaryExpired = isResetExpired(info.primaryReset)
+        let secondaryExpired = isResetExpired(info.secondaryReset)
+        let fiveHour = primaryExpired ? 100 : max(0, 100 - Int(round(info.primaryUsed ?? 0)))
+        let week = secondaryExpired ? 100 : max(0, 100 - Int(round(info.secondaryUsed ?? 0)))
         iconView.fiveHour = fiveHour
         iconView.week = week
         iconView.needsDisplay = true
@@ -345,10 +347,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func formatReset(_ seconds: Int?) -> String {
         guard let seconds else { return "-" }
         let date = Date(timeIntervalSince1970: TimeInterval(seconds))
+        if date <= Date() {
+            return t("已重置", "reset")
+        }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: useChinese ? "zh_CN" : "en_US_POSIX")
         formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : (useChinese ? "M月d日 HH:mm" : "MMM d HH:mm")
         return formatter.string(from: date)
+    }
+
+    private func isResetExpired(_ seconds: Int?) -> Bool {
+        guard let seconds else { return false }
+        return Date(timeIntervalSince1970: TimeInterval(seconds)) <= Date()
     }
 
     private func formatUpdated(_ date: Date?) -> String {
