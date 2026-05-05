@@ -478,13 +478,16 @@ private let pythonScript = #"""
 import json
 import os
 import pathlib
+import select
 import sqlite3
+import subprocess
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 home = pathlib.Path.home()
 db_path = home / ".codex" / "state_5.sqlite"
+codex_binary = pathlib.Path("/Applications/Codex.app/Contents/Resources/codex")
 tz = timezone(timedelta(hours=8))
 now = datetime.now(tz)
 today = now.date()
@@ -493,9 +496,6 @@ ACTIVE_WINDOW_SECONDS = 120
 def fail(message):
     print(json.dumps({"ok": False, "error": message}))
     raise SystemExit(0)
-
-if not db_path.exists():
-    fail("No Codex state database found")
 
 def reversed_lines(path, block_size=65536):
     with open(path, "rb") as f:
@@ -535,6 +535,132 @@ def read_recent_json(path, max_lines=1200):
         if len(lines) >= max_lines:
             break
     return reversed(lines)
+
+def read_app_server_quota(timeout_seconds=8):
+    if not codex_binary.exists():
+        return None
+    try:
+        proc = subprocess.Popen(
+            [str(codex_binary), "app-server", "--analytics-default-enabled"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception:
+        return None
+
+    def send(message):
+        if proc.stdin is None:
+            return
+        proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+
+    try:
+        send({
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "clientInfo": {"name": "codex-battery", "version": "0.1.21"},
+                "capabilities": {
+                    "experimentalApi": True,
+                    "optOutNotificationMethods": [
+                        "thread/started",
+                        "thread/status/changed",
+                        "thread/tokenUsage/updated",
+                        "app/list/updated",
+                        "remoteControl/status/changed",
+                    ],
+                },
+            },
+        })
+        deadline = time.monotonic() + timeout_seconds
+        requested = False
+        while time.monotonic() < deadline:
+            if proc.stdout is None:
+                break
+            readable, _, _ = select.select([proc.stdout], [], [], max(0.1, deadline - time.monotonic()))
+            if not readable:
+                continue
+            line = proc.stdout.readline()
+            if not line:
+                break
+            try:
+                message = json.loads(line)
+            except Exception:
+                continue
+            if message.get("id") == 1 and not requested:
+                send({"method": "initialized"})
+                send({"method": "account/rateLimits/read", "id": 2, "params": None})
+                requested = True
+                continue
+            if message.get("id") == 2:
+                result = message.get("result") or {}
+                by_id = result.get("rateLimitsByLimitId") or {}
+                snapshot = by_id.get("codex") or result.get("rateLimits")
+                if not snapshot:
+                    return None
+                primary = snapshot.get("primary") or {}
+                secondary = snapshot.get("secondary") or {}
+                return {
+                    "timestamp": datetime.now(tz).isoformat(),
+                    "planType": snapshot.get("planType"),
+                    "limitId": snapshot.get("limitId"),
+                    "limitName": snapshot.get("limitName"),
+                    "primaryUsed": primary.get("usedPercent"),
+                    "secondaryUsed": secondary.get("usedPercent"),
+                    "primaryReset": primary.get("resetsAt"),
+                    "secondaryReset": secondary.get("resetsAt"),
+                }
+    except Exception:
+        return None
+    finally:
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=1)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    return None
+
+def empty_stats_out(snapshot):
+    out = dict(snapshot)
+    out.update({
+        "ok": True,
+        "title": None,
+        "model": None,
+        "effort": None,
+        "totalTokens": None,
+        "todayTokens": 0,
+        "todayVs3DayAvg": None,
+        "weeklyBurnPctPerHour": None,
+        "weeklyEtaHours": None,
+        "weeklyBudgetRatio": None,
+        "weeklyDaysEarly": None,
+        "weeklyActiveBudgetRatio": None,
+        "risk": "OK",
+        "topThread": None,
+        "topThreadTokens": None,
+        "activeThreads": 0,
+        "activeWindowSeconds": ACTIVE_WINDOW_SECONDS,
+    })
+    return out
+
+app_server_snapshot = read_app_server_quota()
+
+if not db_path.exists():
+    if app_server_snapshot:
+        print(json.dumps(empty_stats_out(app_server_snapshot), ensure_ascii=False))
+        raise SystemExit(0)
+    fail("No Codex state database found")
 
 last_db_error = None
 rows = None
@@ -662,6 +788,9 @@ for thread_id, rollout_path, title, model, effort in rows:
         continue
 
 if not latest:
+    if app_server_snapshot:
+        print(json.dumps(empty_stats_out(app_server_snapshot), ensure_ascii=False))
+        raise SystemExit(0)
     fail("No recent Codex rate-limit data found")
 
 # Prefer the aggregate Codex quota window. Some model-specific windows report
@@ -717,6 +846,18 @@ if secondary_candidates:
     best_secondary = max(secondary_candidates, key=lambda snap: (float(snap.get("secondaryReset") or 0), float(snap.get("secondaryUsed") or 0), snap["ts"]))
     latest["secondaryUsed"] = best_secondary.get("secondaryUsed")
     latest["secondaryReset"] = best_secondary.get("secondaryReset")
+
+if app_server_snapshot:
+    latest.update({
+        "timestamp": app_server_snapshot.get("timestamp"),
+        "planType": app_server_snapshot.get("planType"),
+        "limitId": app_server_snapshot.get("limitId"),
+        "limitName": app_server_snapshot.get("limitName"),
+        "primaryUsed": app_server_snapshot.get("primaryUsed"),
+        "secondaryUsed": app_server_snapshot.get("secondaryUsed"),
+        "primaryReset": app_server_snapshot.get("primaryReset"),
+        "secondaryReset": app_server_snapshot.get("secondaryReset"),
+    })
 
 today_tokens = int(daily[today]["total_tokens"])
 previous_active = [

@@ -80,7 +80,7 @@ The login item is installed at:
 
 Codex Battery is not signed with a paid Apple Developer ID yet, so macOS may show it as coming from an "unidentified developer" in Login Items or Gatekeeper prompts.
 
-That warning is about Apple code-signing identity, not about network access or data collection. This project is open source, installs from this repository, and reads only local Codex state under `~/.codex`.
+That warning is about Apple code-signing identity, not about data collection. This project is open source, installs from this repository, asks the local Codex app-server for quota status, and reads local Codex state under `~/.codex` for fallback statistics.
 
 If you are cautious, inspect the source first and install from source with `./install.sh`. The current Homebrew formula also builds the app locally from this repository instead of downloading a closed binary.
 
@@ -116,7 +116,7 @@ Top         Codex Battery  21.5M
 - Around `1.0x`: on track to reach reset exactly
 - Above `1.0x`: ahead of budget and may run out early
 
-`Data at` is the timestamp of the Codex `token_count` event used for the displayed quota. If you refresh Codex Battery but Codex has not written a newer usage event yet, this time does not move. The local check time is kept in the row tooltip.
+`Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp. The local check time is kept in the row tooltip.
 
 If a 5-hour or weekly reset window has already passed but Codex has not written a fresh usage event yet, Codex Battery treats that window as reset and shows `100%` plus `reset`.
 
@@ -132,7 +132,7 @@ Codex Battery refreshes:
 - Every 5 minutes while idle
 - Every 60 seconds when recent Codex activity is detected
 
-To keep power use low, it checks only the most recent active threads and reads the tail of each rollout log instead of scanning every log from the beginning.
+To keep power use low, it asks the local Codex app-server for the current account quota, then checks only the most recent active threads and reads the tail of each rollout log for today/top/forecast statistics.
 
 When background Codex work is still running, the menu shows an `Activity` line such as `2 thread(s) active in 2m`. That is a reminder that quota may keep moving even if you are not actively typing in the current thread.
 
@@ -140,19 +140,20 @@ If Codex is temporarily writing, checkpointing, or migrating `~/.codex/state_5.s
 
 ## Accuracy
 
-This is an unofficial local estimator. It reads Codex state and rollout logs from your machine. If Codex has not flushed the latest usage event yet, Codex Battery cannot see it.
+This is an unofficial local dashboard. Current 5-hour and weekly quota are read from the same local Codex app-server account-rate-limit path used by the native UI. Today/top/forecast statistics still come from local rollout logs, so those secondary statistics can lag if Codex has not flushed the latest usage event yet.
 
 Treat it as a fast dashboard, not an accounting source of truth.
 
 ## Compatibility
 
-Codex Battery depends on Codex Desktop's local state format, especially `~/.codex/state_5.sqlite` and the rollout log entries referenced by that database.
+Codex Battery depends on Codex Desktop's local app-server protocol and local state format, especially `account/rateLimits/read`, `~/.codex/state_5.sqlite`, and the rollout log entries referenced by that database.
 
-This is not an official Codex API. If a future Codex Desktop update changes the local database schema, log path layout, or `token_count` event format, Codex Battery may stop showing data until it is updated.
+This is not an official public Codex API. If a future Codex Desktop update changes the app-server protocol, local database schema, log path layout, or `token_count` event format, Codex Battery may stop showing data until it is updated.
 
 Current known baseline:
 
-- Verified with Codex Desktop local state as of 2026-05-03
+- Verified with Codex Desktop `26.429.30905` / app-server protocol as of 2026-05-05
+- Reads quota through local `codex app-server` method `account/rateLimits/read`
 - Reads `~/.codex/state_5.sqlite`
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
@@ -166,9 +167,9 @@ If it breaks after a Codex update, please open an issue with your Codex version,
 
 ## Privacy
 
-Codex Battery does not upload anything and does not make network requests.
+Codex Battery does not upload your rollout logs, thread contents, or statistics. For the primary quota number it starts the local Codex app-server and asks for `account/rateLimits/read`; depending on Codex internals, that app-server request may contact Codex/OpenAI using your existing Codex login, similar to opening the native quota panel.
 
-It reads:
+It also reads locally:
 
 - `~/.codex/state_5.sqlite`
 - recent rollout log paths referenced by that database
