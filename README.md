@@ -12,7 +12,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 
 - Outer ring: weekly quota remaining
 - Inner ring: 5-hour quota remaining
-- Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, and recent background activity
+- Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the last local check time
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
 
@@ -89,21 +89,25 @@ If you are cautious, inspect the source first and install from source with `./in
 Example in English:
 
 ```text
-5h left     99%    May 2 02:16
-1w left     82%    May 5 14:04
-Today burn  183.8M 14.1x    spike today
-Forecast    lasts to reset  0.4x budget
-Top         PoQ Mac clone  91.7M
+5h left     100%   reset
+1w left     49%    May 5 14:04
+Today burn  4.7M   0.0x
+Forecast    lasts to reset  0.5x budget
+Top         Codex Battery menu  4.5M
+Activity    idle
+Updated     08:41:52
 ```
 
 Example in Chinese:
 
 ```text
-5小时剩余  99%    5月2日 02:16
-1周剩余    82%    5月5日 14:04
-今日消耗    183.8M 14.1x    今日冲高
-周预测      可撑到重置  0.4x预算
-Top         PoQ Mac 复刻  91.7M
+5小时剩余  100%   已重置
+1周剩余    49%    5月5日 14:04
+今日消耗    4.7M   0.0x
+周预测      可撑到重置  0.5x预算
+Top         Codex 双环用量小工具  4.5M
+后台活动    空闲
+更新于      08:41:52
 ```
 
 `1.0x budget` means your weekly usage is exactly on the linear budget line. For example, if 50% of the week has passed and you have used 50% of the weekly quota, you are at `1.0x budget`.
@@ -111,6 +115,10 @@ Top         PoQ Mac 复刻  91.7M
 - Below `1.0x`: safer than budget
 - Around `1.0x`: on track to reach reset exactly
 - Above `1.0x`: ahead of budget and may run out early
+
+`Updated` is the local check time, not the quota reset time. If a 5-hour or weekly reset window has already passed but Codex has not written a fresh usage event yet, Codex Battery treats that window as reset and shows `100%` plus `reset`.
+
+If a row is truncated, hover it to see the full value in a tooltip.
 
 ## Refresh Behavior
 
@@ -125,6 +133,8 @@ Codex Battery refreshes:
 To keep power use low, it checks only the most recent active threads and reads the tail of each rollout log instead of scanning every log from the beginning.
 
 When background Codex work is still running, the menu shows an `Activity` line such as `2 thread(s) active in 2m`. That is a reminder that quota may keep moving even if you are not actively typing in the current thread.
+
+If Codex is temporarily writing, checkpointing, or migrating `~/.codex/state_5.sqlite`, a read can fail for a moment. Codex Battery retries several times. If it still cannot read the database but has a previous successful snapshot, it keeps showing that snapshot and marks the check as `Stale` instead of replacing the menu with an error.
 
 ## Accuracy
 
