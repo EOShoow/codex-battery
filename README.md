@@ -89,25 +89,25 @@ If you are cautious, inspect the source first and install from source with `./in
 Example in English:
 
 ```text
-5h left     75%    13:43
-1w left     62%    May 12 08:43
-Today burn  38.6M  0.5x
-Forecast    lasts to reset  0.4x budget
-Top         Codex Battery menu  21.4M
-Activity    idle
-Updated     09:50:26
+5h left     93%    18:44
+1w left     97%    May 12 08:43
+Today burn  49.4M  0.2x
+Forecast    lasts to reset  0.7x budget
+Top         Codex Battery menu  16.9M
+Activity    1 thread active in 2m
+Updated     15:41:51
 ```
 
 Example in Chinese:
 
 ```text
-5小时剩余  75%    13:43
-1周剩余    62%    5月12日 08:43
-今日消耗    38.6M  0.5x
-周预测      可撑到重置  0.4x预算
-Top         Codex 双环用量小工具  21.4M
-后台活动    空闲
-更新于      09:50:26
+5小时剩余  93%    18:44
+1周剩余    97%    5月12日 08:43
+今日消耗    49.4M  0.2x
+周预测      可撑到重置  0.7x预算
+Top         Codex 节能小工具  16.9M
+后台活动    近2分钟 1个线程仍在消耗
+更新于      15:41:51
 ```
 
 `1.0x budget` means your weekly usage is exactly on the linear budget line. For example, if 50% of the week has passed and you have used 50% of the weekly quota, you are at `1.0x budget`.

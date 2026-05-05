@@ -590,7 +590,11 @@ for thread_id, rollout_path, title, model, effort in rows:
                     "totalTokens": total.get("total_tokens")
                 })
                 used = secondary.get("used_percent")
-                if used is not None:
+                # Codex may emit additional model-specific quota windows
+                # (for example codex_bengalfox) whose reset time is not the
+                # main "Remaining quota" window shown in the Codex UI. Keep
+                # weekly trend math anchored to the official aggregate window.
+                if used is not None and rate_limits.get("limit_id") == "codex":
                     weekly_points.append((ts, float(used)))
                 if latest is None or ts > latest["ts"]:
                     latest = {
@@ -627,6 +631,15 @@ for thread_id, rollout_path, title, model, effort in rows:
 
 if not latest:
     fail("No recent Codex rate-limit data found")
+
+# Prefer the aggregate Codex quota window. Some model-specific windows report
+# their own 0% used / now+5h reset values and should not drive the menu.
+official_snapshots = [
+    snap for snap in rate_snapshots
+    if snap.get("limitId") == "codex"
+]
+if official_snapshots:
+    latest = max(official_snapshots, key=lambda snap: snap["ts"])
 
 # Multiple active Codex threads can write rate-limit snapshots with the same
 # reset window but stale used_percent values. Within one reset window usage
