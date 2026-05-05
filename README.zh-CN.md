@@ -97,13 +97,13 @@ Codex Battery 目前还没有使用付费 Apple Developer ID 签名，所以 mac
 示例：
 
 ```text
-5小时剩余  100%   已重置
-1周剩余    49%    5月5日 14:04
-今日消耗    4.7M   0.0x
-周预测      可撑到重置  0.5x预算
-Top         Codex 双环用量小工具  4.5M
+5小时剩余  75%    13:43
+1周剩余    62%    5月12日 08:43
+今日消耗    38.6M  0.5x
+周预测      可撑到重置  0.4x预算
+Top         Codex 双环用量小工具  21.4M
 后台活动    空闲
-更新于      08:41:52
+更新于      09:50:26
 ```
 
 `1.0x预算` 表示你的周额度消耗刚好在线性预算线上。例如一周已经过去 50%，你也刚好用了 50% 的周额度，就是 `1.0x预算`。
@@ -151,6 +151,12 @@ Codex Battery 依赖 Codex Desktop 的本地状态格式，主要是 `~/.codex/s
 - 读取包含 `token_count.rate_limits` 的近期 rollout 日志
 
 如果 Codex 升级后失效，请开 issue，并附上 Codex 版本、macOS 版本、菜单里显示的错误文本。不要直接粘贴私密 rollout 日志；如果必须提供，请先自行检查和脱敏。
+
+## 反馈入口
+
+- 兼容性反馈：[提交兼容性 issue](https://github.com/EOShoow/codex-battery/issues/new?template=compatibility-report.yml)
+- Bug 反馈：[提交 bug report](https://github.com/EOShoow/codex-battery/issues/new?template=bug-report.yml)
+- 使用问题和安装经验：[GitHub Discussions](https://github.com/EOShoow/codex-battery/discussions)
 
 ## 隐私
 

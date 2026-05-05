@@ -1,0 +1,55 @@
+name: Codex compatibility report
+description: Report whether Codex Battery works with your Codex version and environment.
+title: "[Compatibility] "
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping track Codex compatibility. Codex Battery reads local Codex state, so Codex app or CLI updates may require small fixes.
+  - type: input
+    id: codex_battery_version
+    attributes:
+      label: Codex Battery version
+      description: Run `codex-battery --version` if installed through Homebrew, or check the release/app version you installed.
+      placeholder: "0.1.16"
+    validations:
+      required: true
+  - type: input
+    id: codex_version
+    attributes:
+      label: Codex app / CLI version
+      description: Include Desktop app version and/or CLI version if you know it.
+      placeholder: "Codex Desktop ..., Codex CLI ..."
+    validations:
+      required: false
+  - type: dropdown
+    id: result
+    attributes:
+      label: Does it work?
+      options:
+        - Works correctly
+        - Mostly works, but values differ from Codex
+        - Cannot read Codex state
+        - App does not launch
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: If values differ from Codex, please include what Codex shows and what Codex Battery shows.
+      placeholder: |
+        Codex shows:
+        Codex Battery shows:
+        Anything unusual:
+    validations:
+      required: false
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.x / 14.x ..."
+    validations:
+      required: false

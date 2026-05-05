@@ -89,25 +89,25 @@ If you are cautious, inspect the source first and install from source with `./in
 Example in English:
 
 ```text
-5h left     100%   reset
-1w left     49%    May 5 14:04
-Today burn  4.7M   0.0x
-Forecast    lasts to reset  0.5x budget
-Top         Codex Battery menu  4.5M
+5h left     75%    13:43
+1w left     62%    May 12 08:43
+Today burn  38.6M  0.5x
+Forecast    lasts to reset  0.4x budget
+Top         Codex Battery menu  21.4M
 Activity    idle
-Updated     08:41:52
+Updated     09:50:26
 ```
 
 Example in Chinese:
 
 ```text
-5小时剩余  100%   已重置
-1周剩余    49%    5月5日 14:04
-今日消耗    4.7M   0.0x
-周预测      可撑到重置  0.5x预算
-Top         Codex 双环用量小工具  4.5M
+5小时剩余  75%    13:43
+1周剩余    62%    5月12日 08:43
+今日消耗    38.6M  0.5x
+周预测      可撑到重置  0.4x预算
+Top         Codex 双环用量小工具  21.4M
 后台活动    空闲
-更新于      08:41:52
+更新于      09:50:26
 ```
 
 `1.0x budget` means your weekly usage is exactly on the linear budget line. For example, if 50% of the week has passed and you have used 50% of the weekly quota, you are at `1.0x budget`.
@@ -155,6 +155,12 @@ Current known baseline:
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
 If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
+
+## Feedback
+
+- Compatibility reports: [open a compatibility issue](https://github.com/EOShoow/codex-battery/issues/new?template=compatibility-report.yml)
+- Bugs: [open a bug report](https://github.com/EOShoow/codex-battery/issues/new?template=bug-report.yml)
+- Questions and setup notes: [GitHub Discussions](https://github.com/EOShoow/codex-battery/discussions)
 
 ## Privacy
 
