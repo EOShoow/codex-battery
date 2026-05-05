@@ -95,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let forecastItem = NSMenuItem(title: "Forecast -", action: nil, keyEquivalent: "")
     private let topItem = NSMenuItem(title: "Top -", action: nil, keyEquivalent: "")
     private let activityItem = NSMenuItem(title: "Activity -", action: nil, keyEquivalent: "")
-    private let updatedItem = NSMenuItem(title: "Updated -", action: nil, keyEquivalent: "")
+    private let updatedItem = NSMenuItem(title: "Data at -", action: nil, keyEquivalent: "")
     private let refreshItem = NSMenuItem(title: "Refresh", action: nil, keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
@@ -139,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func refreshNow() {
         lastCheckedAt = Date()
-        setInfoItem(updatedItem, label: t("更新于", "Updated"), value: formatUpdated(lastCheckedAt))
+        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: t("刷新中...", "Refreshing..."))
         guard !isRefreshing else { return }
         isRefreshing = true
         setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: t("刷新中...", "Refreshing..."))
@@ -156,7 +156,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.render(info)
                 } else if let cached = self.lastGoodInfo {
                     self.render(cached)
-                    self.setInfoItem(self.updatedItem, label: self.t("旧数据", "Stale"), value: self.formatUpdated(self.lastCheckedAt))
+                    self.setInfoItem(
+                        self.updatedItem,
+                        label: self.t("旧数据", "Stale"),
+                        value: self.formatDataTimestamp(cached.timestamp),
+                        detail: self.t("检查于 \(self.formatUpdated(self.lastCheckedAt))", "checked \(self.formatUpdated(self.lastCheckedAt))")
+                    )
                     self.iconView.tooltipText = info.error ?? self.t("读取失败，显示上次成功数据", "Read failed, showing last successful data")
                 } else {
                     self.render(info)
@@ -183,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
             setInfoItem(topItem, label: "Top", value: "-")
             setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
-            setInfoItem(updatedItem, label: t("更新于", "Updated"), value: "-")
+            setInfoItem(updatedItem, label: t("数据于", "Data at"), value: "-")
             iconView.tooltipText = message
             return
         }
@@ -209,7 +214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topThread = info.topThread ?? "-"
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
-        let updatedAt = formatUpdated(lastCheckedAt)
+        let dataAt = formatDataTimestamp(info.timestamp)
+        let checkedAt = formatUpdated(lastCheckedAt)
         let detail = useChinese ? """
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
@@ -217,7 +223,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         周预测: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
         后台活动: \(activity)
-        更新于: \(updatedAt)
+        数据于: \(dataAt)
+        检查于: \(checkedAt)
         """ : """
         5h left: \(fiveHour)%  \(primaryReset)
         1w left: \(week)%  \(secondaryReset)
@@ -225,7 +232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Weekly forecast: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
         Activity: \(activity)
-        Updated: \(updatedAt)
+        Data at: \(dataAt)
+        Checked: \(checkedAt)
         """
         setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
         setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
@@ -233,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: weeklyPrediction.status, detail: weeklyPrediction.detail)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
-        setInfoItem(updatedItem, label: t("更新于", "Updated"), value: updatedAt)
+        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: dataAt, detail: t("检查于 \(checkedAt)", "checked \(checkedAt)"))
         iconView.tooltipText = detail
     }
 
@@ -376,6 +384,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         formatter.locale = Locale(identifier: useChinese ? "zh_CN" : "en_US_POSIX")
         formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm:ss" : (useChinese ? "M月d日 HH:mm" : "MMM d HH:mm")
         return formatter.string(from: date)
+    }
+
+    private func formatDataTimestamp(_ timestamp: String?) -> String {
+        guard var timestamp, !timestamp.isEmpty else { return "-" }
+        if timestamp.hasSuffix("Z") {
+            timestamp = String(timestamp.dropLast()) + "+00:00"
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        guard let date = formatter.date(from: timestamp) ?? fallbackFormatter.date(from: timestamp) else {
+            return "-"
+        }
+        return formatUpdated(date)
     }
 
     private static func formatNumber(_ value: Int) -> String {

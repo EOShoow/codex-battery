@@ -95,7 +95,7 @@ Today burn  76.2M  0.3x
 Forecast    safe  active pace 0.6x
 Top         Codex Battery  21.5M
 Activity    1 thread active in 2m
-Updated     18:43:17
+Data at     18:43:17
 ```
 
 Example in Chinese:
@@ -107,7 +107,7 @@ Example in Chinese:
 周预测      很安全  活跃节奏 0.6x
 Top         Codex Battery  21.5M
 后台活动    近2分钟 1个线程仍在消耗
-更新于      18:43:17
+数据于      18:43:17
 ```
 
 `active pace 1.0x` means your weekly usage is exactly on the active-hour budget line. Codex Battery counts recent 5-minute active buckets and compares them against an 8h/day workday budget, so sleep and other idle hours do not make the forecast look worse.
@@ -116,7 +116,9 @@ Top         Codex Battery  21.5M
 - Around `1.0x`: on track to reach reset exactly
 - Above `1.0x`: ahead of budget and may run out early
 
-`Updated` is the local check time, not the quota reset time. If a 5-hour or weekly reset window has already passed but Codex has not written a fresh usage event yet, Codex Battery treats that window as reset and shows `100%` plus `reset`.
+`Data at` is the timestamp of the Codex `token_count` event used for the displayed quota. If you refresh Codex Battery but Codex has not written a newer usage event yet, this time does not move. The local check time is kept in the row tooltip.
+
+If a 5-hour or weekly reset window has already passed but Codex has not written a fresh usage event yet, Codex Battery treats that window as reset and shows `100%` plus `reset`.
 
 If a row is truncated, hover it to see the full value in a tooltip.
 
