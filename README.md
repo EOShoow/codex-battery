@@ -89,28 +89,28 @@ If you are cautious, inspect the source first and install from source with `./in
 Example in English:
 
 ```text
-5h left     93%    18:44
-1w left     97%    May 12 08:43
-Today burn  49.4M  0.2x
-Forecast    lasts to reset  0.7x budget
-Top         Codex Battery menu  16.9M
+5h left     82%    18:44
+1w left     96%    May 12 08:43
+Today burn  76.2M  0.3x
+Forecast    safe  active pace 0.6x
+Top         Codex Battery  21.5M
 Activity    1 thread active in 2m
-Updated     15:41:51
+Updated     18:43:17
 ```
 
 Example in Chinese:
 
 ```text
-5小时剩余  93%    18:44
-1周剩余    97%    5月12日 08:43
-今日消耗    49.4M  0.2x
-周预测      可撑到重置  0.7x预算
-Top         Codex 节能小工具  16.9M
+5小时剩余  82%    18:44
+1周剩余    96%    5月12日 08:43
+今日消耗    76.2M  0.3x
+周预测      很安全  活跃节奏 0.6x
+Top         Codex Battery  21.5M
 后台活动    近2分钟 1个线程仍在消耗
-更新于      15:41:51
+更新于      18:43:17
 ```
 
-`1.0x budget` means your weekly usage is exactly on the linear budget line. For example, if 50% of the week has passed and you have used 50% of the weekly quota, you are at `1.0x budget`.
+`active pace 1.0x` means your weekly usage is exactly on the active-hour budget line. Codex Battery counts recent 5-minute active buckets and compares them against an 8h/day workday budget, so sleep and other idle hours do not make the forecast look worse.
 
 - Below `1.0x`: safer than budget
 - Around `1.0x`: on track to reach reset exactly

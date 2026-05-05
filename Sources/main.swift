@@ -76,6 +76,7 @@ struct QuotaInfo: Decodable {
     let weeklyEtaHours: Double?
     let weeklyBudgetRatio: Double?
     let weeklyDaysEarly: Double?
+    let weeklyActiveBudgetRatio: Double?
     let risk: String?
     let topThread: String?
     let topThreadTokens: Int?
@@ -201,6 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let ratio = info.todayVs3DayAvg.map { String(format: "%.1fx", $0) } ?? "-"
         let weeklyPrediction = formatWeeklyPrediction(
             budgetRatio: info.weeklyBudgetRatio,
+            activeBudgetRatio: info.weeklyActiveBudgetRatio,
             daysEarly: info.weeklyDaysEarly
         )
         let todayFlag = formatTodayFlag(info.todayVs3DayAvg)
@@ -212,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
         今日: \(today)  \(ratio)\(todayFlag)
-        周预测: \(weeklyPrediction)
+        周预测: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
         后台活动: \(activity)
         更新于: \(updatedAt)
@@ -220,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         5h left: \(fiveHour)%  \(primaryReset)
         1w left: \(week)%  \(secondaryReset)
         Today: \(today)  \(ratio)\(todayFlag)
-        Weekly forecast: \(weeklyPrediction)
+        Weekly forecast: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
         Activity: \(activity)
         Updated: \(updatedAt)
@@ -228,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
         setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
         setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today, detail: "\(ratio)\(todayFlag)")
-        setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: weeklyPrediction)
+        setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: weeklyPrediction.status, detail: weeklyPrediction.detail)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
         setInfoItem(updatedItem, label: t("更新于", "Updated"), value: updatedAt)
@@ -335,6 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 weeklyEtaHours: nil,
                 weeklyBudgetRatio: nil,
                 weeklyDaysEarly: nil,
+                weeklyActiveBudgetRatio: nil,
                 risk: nil,
                 topThread: nil,
                 topThreadTokens: nil,
@@ -396,25 +399,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return String(format: "%.1fd", hours / 24)
     }
 
-    private func formatWeeklyPrediction(budgetRatio: Double?, daysEarly: Double?) -> String {
-        guard let budgetRatio, budgetRatio.isFinite else {
-            return "-"
+    private func formatWeeklyPrediction(budgetRatio: Double?, activeBudgetRatio: Double?, daysEarly: Double?) -> (status: String, detail: String?) {
+        let preferredRatio = activeBudgetRatio ?? budgetRatio
+        guard let ratioValue = preferredRatio, ratioValue.isFinite else {
+            return ("-", nil)
         }
-        let ratio = useChinese ? String(format: "%.1fx预算", budgetRatio) : String(format: "%.1fx budget", budgetRatio)
+        let ratio = useChinese ? String(format: "活跃节奏 %.1fx", ratioValue) : String(format: "active pace %.1fx", ratioValue)
         if let daysEarly, daysEarly.isFinite, daysEarly > 0 {
-            if daysEarly < 1 {
-                return useChinese
-                    ? "提前\(String(format: "%.0f", daysEarly * 24))小时耗尽  \(ratio)"
-                    : "runs out \(String(format: "%.0f", daysEarly * 24))h early  \(ratio)"
-            }
-            return useChinese
-                ? "提前\(String(format: "%.1f", daysEarly))天耗尽  \(ratio)"
-                : "runs out \(String(format: "%.1f", daysEarly))d early  \(ratio)"
+            return (useChinese ? "会提前耗尽" : "runs out early", ratio)
         }
-        if budgetRatio <= 1.05 {
-            return useChinese ? "可撑到重置  \(ratio)" : "lasts to reset  \(ratio)"
+        if ratioValue <= 0.7 {
+            return (useChinese ? "很安全" : "safe", ratio)
         }
-        return useChinese ? "偏快但可撑  \(ratio)" : "fast but okay  \(ratio)"
+        if ratioValue <= 1.05 {
+            return (useChinese ? "可撑到重置" : "lasts to reset", ratio)
+        }
+        return (useChinese ? "偏快" : "fast", ratio)
     }
 
     private func formatTodayFlag(_ ratio: Double?) -> String {
@@ -535,6 +535,7 @@ top_by_thread = defaultdict(Counter)
 weekly_points = []
 rate_snapshots = []
 active_thread_ids = set()
+active_bins_by_day = defaultdict(set)
 
 for thread_id, rollout_path, title, model, effort in rows:
     if not rollout_path:
@@ -557,6 +558,8 @@ for thread_id, rollout_path, title, model, effort in rows:
                 continue
             if ts >= now - timedelta(seconds=ACTIVE_WINDOW_SECONDS):
                 active_thread_ids.add(thread_id)
+            active_bin = ts.replace(minute=(ts.minute // 5) * 5, second=0, microsecond=0)
+            active_bins_by_day[ts.date()].add(active_bin)
             rate_limits = payload.get("rate_limits")
             info = payload.get("info") or {}
             total = info.get("total_token_usage") or {}
@@ -711,6 +714,7 @@ weekly_burn = None
 weekly_eta = None
 weekly_budget_ratio = None
 weekly_days_early = None
+weekly_active_budget_ratio = None
 if len(recent_weekly) >= 2:
     first_ts, first_used = recent_weekly[0]
     last_ts, last_used = recent_weekly[-1]
@@ -738,6 +742,20 @@ if reset_at and used_week is not None:
             exhaust_at = start_at + 100.0 * elapsed / used_week
             if exhaust_at < reset_at:
                 weekly_days_early = (reset_at - exhaust_at) / 86400
+
+        week_start = datetime.fromtimestamp(start_at, tz)
+        active_bins_this_week = set()
+        for bins in active_bins_by_day.values():
+            for active_bin in bins:
+                if week_start <= active_bin <= now:
+                    active_bins_this_week.add(active_bin)
+        active_hours_elapsed = len(active_bins_this_week) * 5 / 60
+        # Do not assume an always-on 24h/day workload. Budget only actual
+        # observed active buckets, compared against an 8h/day workday budget.
+        active_hours_per_day = 8.0
+        expected_active_used = active_hours_elapsed / (active_hours_per_day * 7) * 100.0
+        if expected_active_used >= 0.5:
+            weekly_active_budget_ratio = used_week / expected_active_used
     except Exception:
         pass
 
@@ -760,6 +778,7 @@ out.update({
     "weeklyEtaHours": weekly_eta,
     "weeklyBudgetRatio": weekly_budget_ratio,
     "weeklyDaysEarly": weekly_days_early,
+    "weeklyActiveBudgetRatio": weekly_active_budget_ratio,
     "risk": risk,
     "topThread": top_thread,
     "topThreadTokens": top_thread_tokens,
