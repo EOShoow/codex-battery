@@ -102,7 +102,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var refreshTimer: Timer?
     private var isRefreshing = false
     private var nextRefreshInterval: TimeInterval = 300
-    private var lastCheckedAt: Date?
     private var lastGoodInfo: QuotaInfo?
 
     private func t(_ zh: String, _ en: String) -> String {
@@ -138,7 +137,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func refreshNow() {
-        lastCheckedAt = Date()
         setInfoItem(updatedItem, label: t("数据于", "Data at"), value: t("刷新中...", "Refreshing..."))
         guard !isRefreshing else { return }
         isRefreshing = true
@@ -159,8 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.setInfoItem(
                         self.updatedItem,
                         label: self.t("旧数据", "Stale"),
-                        value: self.formatDataTimestamp(cached.timestamp),
-                        detail: self.t("检查于 \(self.formatUpdated(self.lastCheckedAt))", "checked \(self.formatUpdated(self.lastCheckedAt))")
+                        value: self.formatDataTimestamp(cached.timestamp)
                     )
                     self.iconView.tooltipText = info.error ?? self.t("读取失败，显示上次成功数据", "Read failed, showing last successful data")
                 } else {
@@ -215,7 +212,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
         let dataAt = formatDataTimestamp(info.timestamp)
-        let checkedAt = formatUpdated(lastCheckedAt)
         let detail = useChinese ? """
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
@@ -224,7 +220,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Top: \(topThread)  \(topThreadTokens)
         后台活动: \(activity)
         数据于: \(dataAt)
-        检查于: \(checkedAt)
         """ : """
         5h left: \(fiveHour)%  \(primaryReset)
         1w left: \(week)%  \(secondaryReset)
@@ -233,7 +228,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Top: \(topThread)  \(topThreadTokens)
         Activity: \(activity)
         Data at: \(dataAt)
-        Checked: \(checkedAt)
         """
         setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
         setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
@@ -241,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: weeklyPrediction.status, detail: weeklyPrediction.detail)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
-        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: dataAt, detail: t("检查于 \(checkedAt)", "checked \(checkedAt)"))
+        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: dataAt)
         iconView.tooltipText = detail
     }
 
@@ -562,7 +556,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.21"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.22"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [

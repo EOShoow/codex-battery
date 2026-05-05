@@ -116,7 +116,7 @@ Top         Codex Battery  21.5M
 - Around `1.0x`: on track to reach reset exactly
 - Above `1.0x`: ahead of budget and may run out early
 
-`Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp. The local check time is kept in the row tooltip.
+`Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp.
 
 If a 5-hour or weekly reset window has already passed but Codex has not written a fresh usage event yet, Codex Battery treats that window as reset and shows `100%` plus `reset`.
 
