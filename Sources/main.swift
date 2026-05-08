@@ -86,6 +86,10 @@ struct QuotaInfo: Decodable {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let menuWidth: CGFloat = 460
+    private static let syncOnMenuOpenKey = "syncOnMenuOpen"
+    private static let activeRefreshInterval: TimeInterval = 600
+    private static let idleRefreshInterval: TimeInterval = 1800
+    private static let failureRetryInterval: TimeInterval = 300
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -97,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let activityItem = NSMenuItem(title: "Activity -", action: nil, keyEquivalent: "")
     private let updatedItem = NSMenuItem(title: "Data at -", action: nil, keyEquivalent: "")
     private let refreshItem = NSMenuItem(title: "Refresh", action: nil, keyEquivalent: "")
+    private let syncOnOpenItem = NSMenuItem(title: "Sync on open Off", action: nil, keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
     private var refreshTimer: Timer?
@@ -119,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         configureActionItem(refreshItem, title: t("刷新", "Refresh"), action: #selector(refreshNow))
+        configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
         configureActionItem(quitItem, title: t("退出", "Quit"), action: #selector(quit))
         menu.delegate = self
         menu.addItem(fiveHourItem)
@@ -130,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(updatedItem)
         menu.addItem(.separator())
         menu.addItem(refreshItem)
+        menu.addItem(syncOnOpenItem)
         menu.addItem(quitItem)
         statusItem.menu = menu
 
@@ -170,7 +177,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        refreshNow()
+        configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
+        if UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey) {
+            refreshNow()
+        }
     }
 
     private func render(_ info: QuotaInfo) {
@@ -289,15 +299,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.view = row
     }
 
+    private func syncOnOpenTitle() -> String {
+        let enabled = UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey)
+        return enabled ? t("打开菜单时刷新：开", "Sync on open: On") : t("打开菜单时刷新：关", "Sync on open: Off")
+    }
+
+    @objc private func toggleSyncOnOpen() {
+        let defaults = UserDefaults.standard
+        defaults.set(!defaults.bool(forKey: Self.syncOnMenuOpenKey), forKey: Self.syncOnMenuOpenKey)
+        configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
+    }
+
     private func scheduleNextRefresh(for info: QuotaInfo) {
         refreshTimer?.invalidate()
         if !info.ok {
-            // Stale data is worse than a slightly more frequent retry. Codex
-            // can briefly lock or lag its local database while writing events.
-            nextRefreshInterval = 15
+            nextRefreshInterval = Self.failureRetryInterval
         } else {
             let activeThreads = info.activeThreads ?? 0
-            nextRefreshInterval = activeThreads > 0 ? 60 : 300
+            nextRefreshInterval = activeThreads > 0 ? Self.activeRefreshInterval : Self.idleRefreshInterval
         }
         refreshTimer = Timer.scheduledTimer(
             timeInterval: nextRefreshInterval,
@@ -556,7 +575,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.22"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.23"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [

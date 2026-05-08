@@ -127,10 +127,12 @@ If a row is truncated, hover it to see the full value in a tooltip.
 Codex Battery refreshes:
 
 - At startup
-- When you open the menu
 - When you click `Refresh`
-- Every 5 minutes while idle
-- Every 60 seconds when recent Codex activity is detected
+- Every 30 minutes while idle
+- Every 10 minutes when recent Codex activity is detected
+- Every 5 minutes after a failed refresh
+
+Opening the menu does not refresh by default, because quota refresh starts the local Codex app-server and can cost power. If you want the old behavior, enable `Sync on open: On` in the menu.
 
 To keep power use low, it asks the local Codex app-server for the current account quota, then checks only the most recent active threads and reads the tail of each rollout log for today/top/forecast statistics.
 
