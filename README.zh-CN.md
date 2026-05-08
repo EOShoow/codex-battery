@@ -125,10 +125,18 @@ Codex Battery 会在这些时机刷新：
 - 启动时
 - 点击 `刷新` 时
 - 空闲时每 30 分钟刷新
-- 检测到近期 Codex 活动时每 10 分钟刷新
+- 检测到近期 Codex 活动时每 5 分钟刷新
 - 刷新失败后每 5 分钟重试
 
 打开菜单默认不会刷新，因为额度刷新会启动本机 Codex app-server，有一定功耗。如果你想恢复旧行为，可以在菜单里打开 `打开菜单时刷新：开`。
+
+自动刷新间隔也可以自己填：
+
+```bash
+defaults write local.codex.battery.menu activeRefreshMinutes -int 5
+defaults write local.codex.battery.menu idleRefreshMinutes -int 30
+defaults write local.codex.battery.menu failureRetryMinutes -int 5
+```
 
 为了降低功耗，它会先向本机 Codex app-server 获取当前账号额度，再只检查最近活跃的线程，并读取每个 rollout 日志的尾部来计算今日、Top 和预测统计。
 

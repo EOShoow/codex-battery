@@ -87,9 +87,12 @@ struct QuotaInfo: Decodable {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let menuWidth: CGFloat = 460
     private static let syncOnMenuOpenKey = "syncOnMenuOpen"
-    private static let activeRefreshInterval: TimeInterval = 600
-    private static let idleRefreshInterval: TimeInterval = 1800
-    private static let failureRetryInterval: TimeInterval = 300
+    private static let activeRefreshMinutesKey = "activeRefreshMinutes"
+    private static let idleRefreshMinutesKey = "idleRefreshMinutes"
+    private static let failureRetryMinutesKey = "failureRetryMinutes"
+    private static let defaultActiveRefreshMinutes = 5
+    private static let defaultIdleRefreshMinutes = 30
+    private static let defaultFailureRetryMinutes = 5
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -313,10 +316,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func scheduleNextRefresh(for info: QuotaInfo) {
         refreshTimer?.invalidate()
         if !info.ok {
-            nextRefreshInterval = Self.failureRetryInterval
+            nextRefreshInterval = Self.refreshInterval(for: Self.failureRetryMinutesKey, defaultMinutes: Self.defaultFailureRetryMinutes)
         } else {
             let activeThreads = info.activeThreads ?? 0
-            nextRefreshInterval = activeThreads > 0 ? Self.activeRefreshInterval : Self.idleRefreshInterval
+            nextRefreshInterval = activeThreads > 0
+                ? Self.refreshInterval(for: Self.activeRefreshMinutesKey, defaultMinutes: Self.defaultActiveRefreshMinutes)
+                : Self.refreshInterval(for: Self.idleRefreshMinutesKey, defaultMinutes: Self.defaultIdleRefreshMinutes)
         }
         refreshTimer = Timer.scheduledTimer(
             timeInterval: nextRefreshInterval,
@@ -325,6 +330,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             userInfo: nil,
             repeats: false
         )
+    }
+
+    private static func refreshInterval(for key: String, defaultMinutes: Int) -> TimeInterval {
+        let configured = UserDefaults.standard.integer(forKey: key)
+        let minutes = configured > 0 ? configured : defaultMinutes
+        return TimeInterval(max(1, minutes) * 60)
     }
 
     private static func readQuota() -> QuotaInfo {
@@ -575,7 +586,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.23"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.24"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
