@@ -84,15 +84,25 @@ struct QuotaInfo: Decodable {
     let activeWindowSeconds: Int?
 }
 
+struct ActivityProbeInfo: Decodable {
+    let ok: Bool
+    let error: String?
+    let timestamp: String?
+    let activeThreads: Int?
+    let activeWindowSeconds: Int?
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let menuWidth: CGFloat = 460
     private static let syncOnMenuOpenKey = "syncOnMenuOpen"
     private static let activeRefreshMinutesKey = "activeRefreshMinutes"
     private static let idleRefreshMinutesKey = "idleRefreshMinutes"
     private static let failureRetryMinutesKey = "failureRetryMinutes"
+    private static let activityProbeSecondsKey = "activityProbeSeconds"
     private static let defaultActiveRefreshMinutes = 5
     private static let defaultIdleRefreshMinutes = 30
     private static let defaultFailureRetryMinutes = 5
+    private static let defaultActivityProbeSeconds = 60
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -108,9 +118,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
     private var refreshTimer: Timer?
+    private var activityProbeTimer: Timer?
     private var isRefreshing = false
     private var nextRefreshInterval: TimeInterval = 300
     private var lastGoodInfo: QuotaInfo?
+    private var lastProbeTriggeredRefreshAt: Date?
 
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
@@ -144,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         refreshNow()
+        startActivityProbeTimer()
     }
 
     @objc private func refreshNow() {
@@ -332,17 +345,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
     }
 
+    private func startActivityProbeTimer() {
+        activityProbeTimer?.invalidate()
+        activityProbeTimer = Timer.scheduledTimer(
+            timeInterval: Self.activityProbeInterval(),
+            target: self,
+            selector: #selector(probeActivity),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func probeActivity() {
+        guard !isRefreshing else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let probe = Self.readActivityProbe()
+            DispatchQueue.main.async {
+                guard probe.ok else { return }
+                let activeThreads = probe.activeThreads ?? 0
+                let windowSeconds = probe.activeWindowSeconds ?? 120
+
+                if let cached = self.lastGoodInfo, (cached.activeThreads ?? 0) == 0 {
+                    self.setInfoItem(
+                        self.activityItem,
+                        label: self.t("后台活动", "Activity"),
+                        value: self.formatActivity(count: activeThreads, seconds: windowSeconds)
+                    )
+                }
+
+                guard activeThreads > 0 else { return }
+                guard (self.lastGoodInfo?.activeThreads ?? 0) == 0 else { return }
+                if let last = self.lastProbeTriggeredRefreshAt, Date().timeIntervalSince(last) < 240 {
+                    return
+                }
+                self.lastProbeTriggeredRefreshAt = Date()
+                self.refreshNow()
+            }
+        }
+    }
+
     private static func refreshInterval(for key: String, defaultMinutes: Int) -> TimeInterval {
         let configured = UserDefaults.standard.integer(forKey: key)
         let minutes = configured > 0 ? configured : defaultMinutes
         return TimeInterval(max(1, minutes) * 60)
     }
 
+    private static func activityProbeInterval() -> TimeInterval {
+        let configured = UserDefaults.standard.integer(forKey: activityProbeSecondsKey)
+        let seconds = configured > 0 ? configured : defaultActivityProbeSeconds
+        return TimeInterval(max(30, seconds))
+    }
+
     private static func readQuota() -> QuotaInfo {
+        return readPythonOutput(as: QuotaInfo.self, arguments: [])
+    }
+
+    private static func readActivityProbe() -> ActivityProbeInfo {
+        return readPythonOutput(as: ActivityProbeInfo.self, arguments: ["--activity-probe"])
+    }
+
+    private static func readPythonOutput<T: Decodable>(as type: T.Type, arguments: [String]) -> T {
         let script = pythonScript
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-c", script]
+        process.arguments = ["-c", script] + arguments
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -352,9 +418,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try process.run()
             process.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return try JSONDecoder().decode(QuotaInfo.self, from: data)
+            return try JSONDecoder().decode(type, from: data)
         } catch {
-            return QuotaInfo(
+            let fallback = QuotaInfo(
                 ok: false,
                 error: error.localizedDescription,
                 timestamp: nil,
@@ -382,6 +448,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 activeThreads: nil,
                 activeWindowSeconds: nil
             )
+            if let typed = fallback as? T {
+                return typed
+            }
+            return ActivityProbeInfo(
+                ok: false,
+                error: error.localizedDescription,
+                timestamp: nil,
+                activeThreads: nil,
+                activeWindowSeconds: nil
+            ) as! T
         }
     }
 
@@ -484,8 +560,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func formatActivity(_ info: QuotaInfo) -> String {
-        let count = info.activeThreads ?? 0
-        let seconds = info.activeWindowSeconds ?? 120
+        formatActivity(count: info.activeThreads ?? 0, seconds: info.activeWindowSeconds ?? 120)
+    }
+
+    private func formatActivity(count: Int, seconds: Int) -> String {
         if count <= 0 {
             return t("空闲", "idle")
         }
@@ -505,6 +583,7 @@ import pathlib
 import select
 import sqlite3
 import subprocess
+import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -612,7 +691,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.25"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.26"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -704,6 +783,72 @@ def empty_stats_out(snapshot):
     })
     return out
 
+def read_activity_probe():
+    try:
+        if not db_path.exists():
+            return {"ok": False, "error": "No Codex state database found"}
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        rows = con.execute(
+            """
+            SELECT id, rollout_path, updated_at, updated_at_ms
+            FROM threads
+            WHERE rollout_path IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 20
+            """
+        ).fetchall()
+        active = set()
+        cutoff_dt = now - timedelta(seconds=ACTIVE_WINDOW_SECONDS)
+        cutoff_epoch = cutoff_dt.timestamp()
+        for thread_id, rollout_path, updated_at, updated_at_ms in rows:
+            if updated_at and float(updated_at) >= cutoff_epoch:
+                active.add(thread_id)
+                continue
+            if updated_at_ms and float(updated_at_ms) / 1000 >= cutoff_epoch:
+                active.add(thread_id)
+                continue
+            path = pathlib.Path(rollout_path)
+            if not path.exists():
+                continue
+            try:
+                if path.stat().st_mtime >= cutoff_epoch:
+                    active.add(thread_id)
+                    continue
+            except Exception:
+                pass
+            scanned = 0
+            for line in reversed_lines(path):
+                scanned += 1
+                if scanned > 200:
+                    break
+                if '"token_count"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                payload = obj.get("payload") or {}
+                if payload.get("type") != "token_count":
+                    continue
+                ts = parse_ts(obj.get("timestamp"))
+                if not ts:
+                    continue
+                if ts >= cutoff_dt:
+                    active.add(thread_id)
+                break
+        return {
+            "ok": True,
+            "timestamp": datetime.now(tz).isoformat(),
+            "activeThreads": len(active),
+            "activeWindowSeconds": ACTIVE_WINDOW_SECONDS,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+if len(sys.argv) > 1 and sys.argv[1] == "--activity-probe":
+    print(json.dumps(read_activity_probe(), ensure_ascii=False))
+    raise SystemExit(0)
+
 app_server_snapshot = read_app_server_quota()
 
 if not db_path.exists():
@@ -750,6 +895,11 @@ for thread_id, rollout_path, title, model, effort in rows:
     if not path.exists():
         continue
     display_title = thread_names.get(thread_id) or title
+    try:
+        if path.stat().st_mtime >= (now - timedelta(seconds=ACTIVE_WINDOW_SECONDS)).timestamp():
+            active_thread_ids.add(thread_id)
+    except Exception:
+        pass
     events = []
     try:
         for line in read_recent_json(path):

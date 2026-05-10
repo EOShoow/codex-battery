@@ -136,12 +136,15 @@ Codex Battery refreshes:
 
 Opening the menu does not refresh by default, because quota refresh starts the local Codex app-server and can cost power. If you want the old behavior, enable `Sync on open: On` in the menu.
 
+To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 60 seconds. That probe only reads local state and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active, it triggers a full refresh immediately.
+
 You can tune the automatic intervals:
 
 ```bash
 defaults write local.codex.battery.menu activeRefreshMinutes -int 5
 defaults write local.codex.battery.menu idleRefreshMinutes -int 30
 defaults write local.codex.battery.menu failureRetryMinutes -int 5
+defaults write local.codex.battery.menu activityProbeSeconds -int 60
 ```
 
 To keep power use low, it asks the local Codex app-server for the current account quota, then checks only the most recent active threads and reads the tail of each rollout log for today/top/forecast statistics.
