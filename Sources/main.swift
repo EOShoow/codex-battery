@@ -4,6 +4,7 @@ import Foundation
 final class QuotaIconView: NSView {
     var fiveHour = 0
     var week = 0
+    var serviceTier = "standard"
     var tooltipText = "Codex quota" {
         didSet { toolTip = tooltipText }
     }
@@ -29,6 +30,7 @@ final class QuotaIconView: NSView {
         let square = NSRect(origin: origin, size: NSSize(width: size, height: size)).insetBy(dx: 2.5, dy: 2.5)
         drawRing(in: square, remaining: week, width: 2.7)
         drawRing(in: square.insetBy(dx: 3.5, dy: 3.5), remaining: fiveHour, width: 2.7)
+        drawCenterMark(in: square.insetBy(dx: 7.0, dy: 7.0), serviceTier: serviceTier)
     }
 
     private func drawRing(in rect: NSRect, remaining: Int, width: CGFloat) {
@@ -53,6 +55,33 @@ final class QuotaIconView: NSView {
         NSColor.labelColor.withAlphaComponent(0.86).setStroke()
         arc.stroke()
     }
+
+    private func drawCenterMark(in rect: NSRect, serviceTier: String) {
+        if Self.isStandardServiceTier(serviceTier) {
+            return
+        }
+        drawBolt(in: rect)
+    }
+
+    private static func isStandardServiceTier(_ serviceTier: String) -> Bool {
+        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty || normalized == "standard" || normalized == "default" || normalized == "none" || normalized == "null"
+    }
+
+    private func drawBolt(in rect: NSRect) {
+        let x = rect.midX
+        let y = rect.midY
+        let bolt = NSBezierPath()
+        bolt.move(to: NSPoint(x: x + 0.9, y: y + 4.0))
+        bolt.line(to: NSPoint(x: x - 3.0, y: y - 0.2))
+        bolt.line(to: NSPoint(x: x - 0.5, y: y - 0.2))
+        bolt.line(to: NSPoint(x: x - 1.0, y: y - 4.0))
+        bolt.line(to: NSPoint(x: x + 3.0, y: y + 0.6))
+        bolt.line(to: NSPoint(x: x + 0.5, y: y + 0.6))
+        bolt.close()
+        NSColor.labelColor.withAlphaComponent(0.9).setFill()
+        bolt.fill()
+    }
 }
 
 struct QuotaInfo: Decodable {
@@ -62,6 +91,7 @@ struct QuotaInfo: Decodable {
     let planType: String?
     let limitId: String?
     let limitName: String?
+    let serviceTier: String?
     let primaryUsed: Double?
     let secondaryUsed: Double?
     let primaryReset: Int?
@@ -88,6 +118,7 @@ struct ActivityProbeInfo: Decodable {
     let ok: Bool
     let error: String?
     let timestamp: String?
+    let sourceUpdatedAt: String?
     let activeThreads: Int?
     let activeWindowSeconds: Int?
 }
@@ -122,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isRefreshing = false
     private var nextRefreshInterval: TimeInterval = 300
     private var lastGoodInfo: QuotaInfo?
+    private var lastKnownSourceUpdatedAt: String?
     private var lastProbeTriggeredRefreshAt: Date?
 
     private func t(_ zh: String, _ en: String) -> String {
@@ -174,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 if info.ok {
                     self.lastGoodInfo = info
+                    self.lastKnownSourceUpdatedAt = info.timestamp
                     self.render(info)
                 } else if let cached = self.lastGoodInfo {
                     self.render(cached)
@@ -204,6 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let message = info.error ?? "No quota data"
             iconView.fiveHour = 0
             iconView.week = 0
+            iconView.serviceTier = "standard"
             iconView.needsDisplay = true
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
@@ -222,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let week = secondaryExpired ? 100 : max(0, 100 - Int(round(info.secondaryUsed ?? 0)))
         iconView.fiveHour = fiveHour
         iconView.week = week
+        iconView.serviceTier = info.serviceTier ?? "standard"
         iconView.needsDisplay = true
 
         let primaryReset = formatReset(info.primaryReset)
@@ -364,6 +399,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard probe.ok else { return }
                 let activeThreads = probe.activeThreads ?? 0
                 let windowSeconds = probe.activeWindowSeconds ?? 120
+                let sourceAdvanced = Self.isLaterTimestamp(probe.sourceUpdatedAt, than: self.lastKnownSourceUpdatedAt)
+                let becameActive = activeThreads > 0 && (self.lastGoodInfo?.activeThreads ?? 0) == 0
 
                 if let cached = self.lastGoodInfo, (cached.activeThreads ?? 0) == 0 {
                     self.setInfoItem(
@@ -373,9 +410,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     )
                 }
 
-                guard activeThreads > 0 else { return }
-                guard (self.lastGoodInfo?.activeThreads ?? 0) == 0 else { return }
-                if let last = self.lastProbeTriggeredRefreshAt, Date().timeIntervalSince(last) < 240 {
+                guard sourceAdvanced || becameActive else { return }
+                if becameActive, let last = self.lastProbeTriggeredRefreshAt, Date().timeIntervalSince(last) < 240 {
                     return
                 }
                 self.lastProbeTriggeredRefreshAt = Date()
@@ -394,6 +430,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let configured = UserDefaults.standard.integer(forKey: activityProbeSecondsKey)
         let seconds = configured > 0 ? configured : defaultActivityProbeSeconds
         return TimeInterval(max(30, seconds))
+    }
+
+    private static func isLaterTimestamp(_ lhs: String?, than rhs: String?) -> Bool {
+        guard let lhsDate = parseCodexTimestamp(lhs) else { return false }
+        guard let rhsDate = parseCodexTimestamp(rhs) else { return true }
+        return lhsDate.timeIntervalSince(rhsDate) > 0.5
+    }
+
+    private static func parseCodexTimestamp(_ timestamp: String?) -> Date? {
+        guard var timestamp, !timestamp.isEmpty else { return nil }
+        if timestamp.hasSuffix("Z") {
+            timestamp = String(timestamp.dropLast()) + "+00:00"
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: timestamp) ?? fallbackFormatter.date(from: timestamp)
     }
 
     private static func readQuota() -> QuotaInfo {
@@ -427,6 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 planType: nil,
                 limitId: nil,
                 limitName: nil,
+                serviceTier: nil,
                 primaryUsed: nil,
                 secondaryUsed: nil,
                 primaryReset: nil,
@@ -455,6 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ok: false,
                 error: error.localizedDescription,
                 timestamp: nil,
+                sourceUpdatedAt: nil,
                 activeThreads: nil,
                 activeWindowSeconds: nil
             ) as! T
@@ -591,6 +647,7 @@ from datetime import datetime, timedelta, timezone
 home = pathlib.Path.home()
 db_path = home / ".codex" / "state_5.sqlite"
 session_index_path = home / ".codex" / "session_index.jsonl"
+global_state_path = home / ".codex" / ".codex-global-state.json"
 codex_binary = pathlib.Path("/Applications/Codex.app/Contents/Resources/codex")
 tz = timezone(timedelta(hours=8))
 now = datetime.now(tz)
@@ -631,6 +688,18 @@ def parse_ts(value):
 
 def compact_title(value):
     return (value or "Unknown").replace("\n", " ")[:28]
+
+def read_service_tier(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        state = data.get("electron-persisted-atom-state") or {}
+        value = state.get("default-service-tier")
+        if value is None:
+            return "standard"
+        text = str(value).strip()
+        return text or "standard"
+    except Exception:
+        return "standard"
 
 def load_thread_names(path):
     names = {}
@@ -691,7 +760,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.26"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.27"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -767,6 +836,7 @@ def empty_stats_out(snapshot):
         "title": None,
         "model": None,
         "effort": None,
+        "serviceTier": read_service_tier(global_state_path),
         "totalTokens": None,
         "todayTokens": 0,
         "todayVs3DayAvg": None,
@@ -798,9 +868,25 @@ def read_activity_probe():
             """
         ).fetchall()
         active = set()
+        latest_source_at = 0.0
+        try:
+            if global_state_path.exists():
+                latest_source_at = max(latest_source_at, global_state_path.stat().st_mtime)
+        except Exception:
+            pass
         cutoff_dt = now - timedelta(seconds=ACTIVE_WINDOW_SECONDS)
         cutoff_epoch = cutoff_dt.timestamp()
         for thread_id, rollout_path, updated_at, updated_at_ms in rows:
+            try:
+                if updated_at:
+                    latest_source_at = max(latest_source_at, float(updated_at))
+            except Exception:
+                pass
+            try:
+                if updated_at_ms:
+                    latest_source_at = max(latest_source_at, float(updated_at_ms) / 1000)
+            except Exception:
+                pass
             if updated_at and float(updated_at) >= cutoff_epoch:
                 active.add(thread_id)
                 continue
@@ -811,7 +897,9 @@ def read_activity_probe():
             if not path.exists():
                 continue
             try:
-                if path.stat().st_mtime >= cutoff_epoch:
+                stat_mtime = path.stat().st_mtime
+                latest_source_at = max(latest_source_at, stat_mtime)
+                if stat_mtime >= cutoff_epoch:
                     active.add(thread_id)
                     continue
             except Exception:
@@ -833,12 +921,15 @@ def read_activity_probe():
                 ts = parse_ts(obj.get("timestamp"))
                 if not ts:
                     continue
+                latest_source_at = max(latest_source_at, ts.timestamp())
                 if ts >= cutoff_dt:
                     active.add(thread_id)
                 break
+        source_updated_at = datetime.fromtimestamp(latest_source_at, tz).isoformat() if latest_source_at > 0 else None
         return {
             "ok": True,
             "timestamp": datetime.now(tz).isoformat(),
+            "sourceUpdatedAt": source_updated_at,
             "activeThreads": len(active),
             "activeWindowSeconds": ACTIVE_WINDOW_SECONDS,
         }
@@ -1146,6 +1237,7 @@ out.update({
     "ok": True,
     "todayTokens": today_tokens,
     "todayVs3DayAvg": today_vs_3,
+    "serviceTier": read_service_tier(global_state_path),
     "weeklyBurnPctPerHour": weekly_burn,
     "weeklyEtaHours": weekly_eta,
     "weeklyBudgetRatio": weekly_budget_ratio,
