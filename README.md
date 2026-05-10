@@ -12,7 +12,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 
 - Outer ring: weekly quota remaining
 - Inner ring: 5-hour quota remaining
-- Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the last local check time
+- Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
 
@@ -26,6 +26,8 @@ Use it to answer:
 - Will my weekly quota last until reset?
 - Is today's usage unusually heavy?
 - Which Codex thread is burning the most tokens?
+
+If you rename a Codex thread in the sidebar, the `Top` row uses that renamed title when Codex writes it to the local session index.
 
 ## Install
 

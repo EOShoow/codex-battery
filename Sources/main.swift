@@ -511,6 +511,7 @@ from datetime import datetime, timedelta, timezone
 
 home = pathlib.Path.home()
 db_path = home / ".codex" / "state_5.sqlite"
+session_index_path = home / ".codex" / "session_index.jsonl"
 codex_binary = pathlib.Path("/Applications/Codex.app/Contents/Resources/codex")
 tz = timezone(timedelta(hours=8))
 now = datetime.now(tz)
@@ -552,6 +553,31 @@ def parse_ts(value):
 def compact_title(value):
     return (value or "Unknown").replace("\n", " ")[:28]
 
+def load_thread_names(path):
+    names = {}
+    if not path.exists():
+        return names
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if '"thread_name"' not in line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                thread_id = item.get("id")
+                name = item.get("thread_name")
+                updated_at = item.get("updated_at") or ""
+                if not thread_id or not name:
+                    continue
+                previous = names.get(thread_id)
+                if previous is None or updated_at >= previous[0]:
+                    names[thread_id] = (updated_at, name)
+    except Exception:
+        return {}
+    return {thread_id: name for thread_id, (_, name) in names.items()}
+
 def read_recent_json(path, max_lines=1200):
     lines = []
     for line in reversed_lines(path):
@@ -586,7 +612,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.24"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.25"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -715,6 +741,7 @@ weekly_points = []
 rate_snapshots = []
 active_thread_ids = set()
 active_bins_by_day = defaultdict(set)
+thread_names = load_thread_names(session_index_path)
 
 for thread_id, rollout_path, title, model, effort in rows:
     if not rollout_path:
@@ -722,6 +749,7 @@ for thread_id, rollout_path, title, model, effort in rows:
     path = pathlib.Path(rollout_path)
     if not path.exists():
         continue
+    display_title = thread_names.get(thread_id) or title
     events = []
     try:
         for line in read_recent_json(path):
@@ -766,7 +794,7 @@ for thread_id, rollout_path, title, model, effort in rows:
                     "secondaryUsed": secondary.get("used_percent"),
                     "primaryReset": primary.get("resets_at"),
                     "secondaryReset": secondary.get("resets_at"),
-                    "title": title,
+                    "title": display_title,
                     "model": model,
                     "effort": effort,
                     "totalTokens": total.get("total_tokens")
@@ -789,7 +817,7 @@ for thread_id, rollout_path, title, model, effort in rows:
                         "secondaryUsed": secondary.get("used_percent"),
                         "primaryReset": primary.get("resets_at"),
                         "secondaryReset": secondary.get("resets_at"),
-                        "title": title,
+                        "title": display_title,
                         "model": model,
                         "effort": effort,
                         "totalTokens": total.get("total_tokens")
@@ -805,7 +833,7 @@ for thread_id, rollout_path, title, model, effort in rows:
             if day >= today - timedelta(days=10):
                 daily[day]["total_tokens"] += diff
                 daily[day]["turns"] += 1
-                label = compact_title(title)
+                label = compact_title(display_title)
                 top_by_thread[(day, label)]["total_tokens"] += diff
                 top_by_thread[(day, label)]["turns"] += 1
     except Exception:
