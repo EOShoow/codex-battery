@@ -643,11 +643,16 @@ import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+try:
+    import tomllib
+except Exception:
+    tomllib = None
 
 home = pathlib.Path.home()
 db_path = home / ".codex" / "state_5.sqlite"
 session_index_path = home / ".codex" / "session_index.jsonl"
 global_state_path = home / ".codex" / ".codex-global-state.json"
+config_path = home / ".codex" / "config.toml"
 codex_binary = pathlib.Path("/Applications/Codex.app/Contents/Resources/codex")
 tz = timezone(timedelta(hours=8))
 now = datetime.now(tz)
@@ -689,15 +694,55 @@ def parse_ts(value):
 def compact_title(value):
     return (value or "Unknown").replace("\n", " ")[:28]
 
-def read_service_tier(path):
+def normalize_service_tier(value):
+    if value is None:
+        return "standard"
+    text = str(value).strip().strip('"').strip("'")
+    return text or "standard"
+
+def read_config_service_tier(path):
+    if not path.exists():
+        return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(text)
+            desktop = data.get("desktop") or {}
+            value = desktop.get("default-service-tier")
+            if value is not None:
+                return normalize_service_tier(value)
+            value = data.get("default-service-tier")
+            if value is not None:
+                return normalize_service_tier(value)
+        except Exception:
+            pass
+    current_section = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current_section = [part.strip() for part in line.strip("[]").split(".")]
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == "default-service-tier" and current_section in ([], ["desktop"]):
+            return normalize_service_tier(value.split("#", 1)[0])
+    return None
+
+def read_service_tier(global_path, config_path):
+    config_value = read_config_service_tier(config_path)
+    if config_value:
+        return config_value
+    try:
+        data = json.loads(global_path.read_text(encoding="utf-8"))
         state = data.get("electron-persisted-atom-state") or {}
         value = state.get("default-service-tier")
-        if value is None:
-            return "standard"
-        text = str(value).strip()
-        return text or "standard"
+        return normalize_service_tier(value)
     except Exception:
         return "standard"
 
@@ -836,7 +881,7 @@ def empty_stats_out(snapshot):
         "title": None,
         "model": None,
         "effort": None,
-        "serviceTier": read_service_tier(global_state_path),
+        "serviceTier": read_service_tier(global_state_path, config_path),
         "totalTokens": None,
         "todayTokens": 0,
         "todayVs3DayAvg": None,
@@ -872,6 +917,11 @@ def read_activity_probe():
         try:
             if global_state_path.exists():
                 latest_source_at = max(latest_source_at, global_state_path.stat().st_mtime)
+        except Exception:
+            pass
+        try:
+            if config_path.exists():
+                latest_source_at = max(latest_source_at, config_path.stat().st_mtime)
         except Exception:
             pass
         cutoff_dt = now - timedelta(seconds=ACTIVE_WINDOW_SECONDS)
@@ -1237,7 +1287,7 @@ out.update({
     "ok": True,
     "todayTokens": today_tokens,
     "todayVs3DayAvg": today_vs_3,
-    "serviceTier": read_service_tier(global_state_path),
+    "serviceTier": read_service_tier(global_state_path, config_path),
     "weeklyBurnPctPerHour": weekly_burn,
     "weeklyEtaHours": weekly_eta,
     "weeklyBudgetRatio": weekly_budget_ratio,

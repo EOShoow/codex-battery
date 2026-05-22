@@ -137,7 +137,7 @@ Codex Battery refreshes:
 
 Opening the menu does not refresh by default, because quota refresh starts the local Codex app-server and can cost power. If you want the old behavior, enable `Sync on open: On` in the menu.
 
-To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 60 seconds. That probe only reads local state, the global Codex speed-tier setting, and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active or the local data source timestamp advance, it triggers a full refresh immediately.
+To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 60 seconds. That probe only reads local state, the Codex speed-tier setting, and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active or the local data source timestamp advance, it triggers a full refresh immediately.
 
 You can tune the automatic intervals:
 
@@ -162,15 +162,17 @@ Treat it as a fast dashboard, not an accounting source of truth.
 
 ## Compatibility
 
-Codex Battery depends on Codex Desktop's local app-server protocol and local state format, especially `account/rateLimits/read`, `~/.codex/state_5.sqlite`, and the rollout log entries referenced by that database.
+Codex Battery depends on Codex Desktop's local app-server protocol and local state format, especially `account/rateLimits/read`, `~/.codex/state_5.sqlite`, `~/.codex/config.toml`, and the rollout log entries referenced by that database.
 
 This is not an official public Codex API. If a future Codex Desktop update changes the app-server protocol, local database schema, log path layout, or `token_count` event format, Codex Battery may stop showing data until it is updated.
 
 Current known baseline:
 
 - Verified with Codex Desktop `26.429.30905` / app-server protocol as of 2026-05-05
+- Verified with Codex Desktop `26.519.31651` as of 2026-05-22
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
 - Reads `~/.codex/state_5.sqlite`
+- Reads the speed tier from `~/.codex/config.toml` first, then falls back to `~/.codex/.codex-global-state.json`
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
 If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
@@ -188,6 +190,7 @@ Codex Battery does not upload your rollout logs, thread contents, or statistics.
 It also reads locally:
 
 - `~/.codex/state_5.sqlite`
+- `~/.codex/config.toml` for the local Codex speed-tier setting
 - recent rollout log paths referenced by that database
 
 Thread titles are displayed locally so you can see which conversation is consuming tokens.

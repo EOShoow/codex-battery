@@ -133,7 +133,7 @@ Codex Battery 会在这些时机刷新：
 
 打开菜单默认不会刷新，因为额度刷新会启动本机 Codex app-server，有一定功耗。如果你想恢复旧行为，可以在菜单里打开 `打开菜单时刷新：开`。
 
-为了避免你从空闲重新开始工作后还卡在 30 分钟等待里，Codex Battery 会额外每 60 秒跑一次轻量活动探针。这个探针只读本机状态、Codex 全局速度档位和最近 rollout 日志尾部，不启动 Codex app-server；如果发现从空闲变成活跃，或本地数据源时间戳变新，就立即触发一次完整刷新。
+为了避免你从空闲重新开始工作后还卡在 30 分钟等待里，Codex Battery 会额外每 60 秒跑一次轻量活动探针。这个探针只读本机状态、Codex 速度档位和最近 rollout 日志尾部，不启动 Codex app-server；如果发现从空闲变成活跃，或本地数据源时间戳变新，就立即触发一次完整刷新。
 
 自动刷新间隔也可以自己填：
 
@@ -158,15 +158,17 @@ defaults write local.codex.battery.menu activityProbeSeconds -int 60
 
 ## 兼容性
 
-Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格式，主要是 `account/rateLimits/read`、`~/.codex/state_5.sqlite`，以及这个数据库引用的 rollout 日志。
+Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格式，主要是 `account/rateLimits/read`、`~/.codex/state_5.sqlite`、`~/.codex/config.toml`，以及这个数据库引用的 rollout 日志。
 
 这不是 Codex 官方公开 API。如果未来 Codex Desktop 升级后修改了 app-server 协议、本地数据库结构、日志路径布局，或者 `token_count` 事件格式，Codex Battery 可能会暂时读不到数据，需要更新后才能恢复。
 
 当前已知基线：
 
 - 已在 2026-05-05 的 Codex Desktop `26.429.30905` / app-server 协议上验证
+- 已在 2026-05-22 的 Codex Desktop `26.519.31651` 上验证
 - 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度
 - 读取 `~/.codex/state_5.sqlite`
+- 优先从 `~/.codex/config.toml` 读取 speed 档位，再回退到 `~/.codex/.codex-global-state.json`
 - 读取包含 `token_count.rate_limits` 的近期 rollout 日志
 
 如果 Codex 升级后失效，请开 issue，并附上 Codex 版本、macOS 版本、菜单里显示的错误文本。不要直接粘贴私密 rollout 日志；如果必须提供，请先自行检查和脱敏。
@@ -184,6 +186,7 @@ Codex Battery 不上传你的 rollout 日志、对话内容或本地统计。核
 它还会在本机读取：
 
 - `~/.codex/state_5.sqlite`
+- `~/.codex/config.toml` 中的本机 Codex speed 档位设置
 - 该数据库引用的近期 rollout 日志
 
 对话标题只在本机菜单里显示，用于判断哪个对话最耗 token。
