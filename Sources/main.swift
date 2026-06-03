@@ -710,16 +710,21 @@ def read_config_service_tier(path):
     if tomllib is not None:
         try:
             data = tomllib.loads(text)
-            desktop = data.get("desktop") or {}
-            value = desktop.get("default-service-tier")
+            value = data.get("service_tier")
             if value is not None:
                 return normalize_service_tier(value)
+            desktop = data.get("desktop") or {}
             value = data.get("default-service-tier")
+            if value is not None:
+                return normalize_service_tier(value)
+            value = desktop.get("default-service-tier")
             if value is not None:
                 return normalize_service_tier(value)
         except Exception:
             pass
     current_section = []
+    service_tier_value = None
+    legacy_service_tier_value = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -730,8 +735,15 @@ def read_config_service_tier(path):
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
-        if key.strip() == "default-service-tier" and current_section in ([], ["desktop"]):
-            return normalize_service_tier(value.split("#", 1)[0])
+        normalized_key = key.strip()
+        if normalized_key == "service_tier" and current_section == []:
+            service_tier_value = normalize_service_tier(value.split("#", 1)[0])
+        if normalized_key == "default-service-tier" and current_section in ([], ["desktop"]):
+            legacy_service_tier_value = normalize_service_tier(value.split("#", 1)[0])
+    if service_tier_value:
+        return service_tier_value
+    if legacy_service_tier_value:
+        return legacy_service_tier_value
     return None
 
 def read_service_tier(global_path, config_path):

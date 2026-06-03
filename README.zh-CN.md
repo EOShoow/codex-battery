@@ -168,7 +168,7 @@ Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格
 - 已在 2026-05-22 的 Codex Desktop `26.519.31651` 上验证
 - 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度
 - 读取 `~/.codex/state_5.sqlite`
-- 优先从 `~/.codex/config.toml` 读取 speed 档位，再回退到 `~/.codex/.codex-global-state.json`
+- 优先从 `~/.codex/config.toml` 读取 speed 档位（新字段 `service_tier`，兼容旧字段 `default-service-tier`），再回退到 `~/.codex/.codex-global-state.json`
 - 读取包含 `token_count.rate_limits` 的近期 rollout 日志
 
 如果 Codex 升级后失效，请开 issue，并附上 Codex 版本、macOS 版本、菜单里显示的错误文本。不要直接粘贴私密 rollout 日志；如果必须提供，请先自行检查和脱敏。

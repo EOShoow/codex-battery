@@ -172,7 +172,7 @@ Current known baseline:
 - Verified with Codex Desktop `26.519.31651` as of 2026-05-22
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
 - Reads `~/.codex/state_5.sqlite`
-- Reads the speed tier from `~/.codex/config.toml` first, then falls back to `~/.codex/.codex-global-state.json`
+- Reads the speed tier from `~/.codex/config.toml` (`service_tier`, with legacy `default-service-tier` fallback), then falls back to `~/.codex/.codex-global-state.json`
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
 If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
