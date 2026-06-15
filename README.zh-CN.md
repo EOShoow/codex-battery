@@ -115,7 +115,7 @@ Top         Codex Battery  21.5M
 - 约等于 `1.0x`：按当前节奏刚好撑到重置
 - 高于 `1.0x`：快于预算，可能提前耗尽
 
-`数据于` 是当前额度快照的时间。正常情况下它来自 Codex app-server 的 `account/rateLimits/read` 返回，和原生 Codex 额度面板更接近；如果这个请求失败，Codex Battery 会回退到本机最新的 `token_count` 事件，此时这个时间就是该事件的生成时间。
+`数据于` 是当前额度快照的时间。正常情况下它来自 Codex app-server 的 `account/rateLimits/read` 返回，和原生 Codex 额度面板更接近；如果首次读取实时额度前这个请求失败，Codex Battery 会回退到本机最新的 `token_count` 事件，此时这个时间就是该事件的生成时间。已经缓存过实时额度后，如果后续刷新失败，它会继续显示上一份实时快照并标记为 `旧数据`，不会再用更旧的 rollout 日志额度覆盖菜单。
 
 如果 5 小时或 1 周窗口的重置时间已经过去，但 Codex 还没有写入新的 usage 事件，Codex Battery 会把这个窗口视为已重置，显示 `100%` 和 `已重置`。
 
@@ -148,7 +148,7 @@ defaults write local.codex.battery.menu activityProbeSeconds -int 60
 
 如果后台 Codex 任务仍在运行，菜单会显示 `后台活动` 行，例如 `近2分钟 2 个线程仍在消耗`。这用于提醒你：即使当前对话没有输入，额度也可能因为后台自动化继续变化。
 
-如果 Codex 正在写入、checkpoint 或迁移 `~/.codex/state_5.sqlite`，读取可能会瞬时失败。Codex Battery 会先重试多次；如果仍然失败，但之前已经成功读到过数据，就继续显示上一份成功快照，并把检查状态标为 `旧数据`，而不是把整个菜单替换成错误。
+如果 Codex 正在写入、checkpoint 或迁移 `~/.codex/state_5.sqlite`，或本机 app-server 额度读取短暂失败，刷新可能会失败。Codex Battery 会先重试多次；如果之前已经读到过实时额度，就继续显示上一份成功快照，并把检查状态标为 `旧数据`，而不是把整个菜单替换成错误或更旧的 rollout 日志额度。
 
 ## 准确性
 

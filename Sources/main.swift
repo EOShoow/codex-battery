@@ -91,6 +91,7 @@ struct QuotaInfo: Decodable {
     let planType: String?
     let limitId: String?
     let limitName: String?
+    let quotaSource: String?
     let serviceTier: String?
     let primaryUsed: Double?
     let secondaryUsed: Double?
@@ -204,7 +205,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .utility).async {
             let info = Self.readQuota()
             DispatchQueue.main.async {
-                if info.ok {
+                var scheduleAsFailure = false
+                if info.ok, self.shouldKeepCachedQuota(over: info), let cached = self.lastGoodInfo {
+                    self.render(cached)
+                    self.setInfoItem(
+                        self.updatedItem,
+                        label: self.t("旧数据", "Stale"),
+                        value: self.formatDataTimestamp(cached.timestamp)
+                    )
+                    self.iconView.tooltipText = self.t(
+                        "实时额度读取失败，显示上次成功数据",
+                        "Live quota read failed, showing last successful data"
+                    )
+                    scheduleAsFailure = true
+                } else if info.ok {
                     self.lastGoodInfo = info
                     self.lastKnownSourceUpdatedAt = info.timestamp
                     self.render(info)
@@ -220,9 +234,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.render(info)
                 }
                 self.isRefreshing = false
-                self.scheduleNextRefresh(for: info)
+                self.scheduleNextRefresh(for: scheduleAsFailure ? nil : info)
             }
         }
+    }
+
+    private func shouldKeepCachedQuota(over info: QuotaInfo) -> Bool {
+        guard let cached = lastGoodInfo else { return false }
+        return cached.quotaSource == "app_server" && info.quotaSource == "rollout"
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -361,16 +380,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
     }
 
-    private func scheduleNextRefresh(for info: QuotaInfo) {
+    private func scheduleNextRefresh(for info: QuotaInfo?) {
         refreshTimer?.invalidate()
-        if !info.ok {
+        guard let info, info.ok else {
             nextRefreshInterval = Self.refreshInterval(for: Self.failureRetryMinutesKey, defaultMinutes: Self.defaultFailureRetryMinutes)
-        } else {
-            let activeThreads = info.activeThreads ?? 0
-            nextRefreshInterval = activeThreads > 0
-                ? Self.refreshInterval(for: Self.activeRefreshMinutesKey, defaultMinutes: Self.defaultActiveRefreshMinutes)
-                : Self.refreshInterval(for: Self.idleRefreshMinutesKey, defaultMinutes: Self.defaultIdleRefreshMinutes)
+            refreshTimer = Timer.scheduledTimer(
+                timeInterval: nextRefreshInterval,
+                target: self,
+                selector: #selector(refreshNow),
+                userInfo: nil,
+                repeats: false
+            )
+            return
         }
+        let activeThreads = info.activeThreads ?? 0
+        nextRefreshInterval = activeThreads > 0
+            ? Self.refreshInterval(for: Self.activeRefreshMinutesKey, defaultMinutes: Self.defaultActiveRefreshMinutes)
+            : Self.refreshInterval(for: Self.idleRefreshMinutesKey, defaultMinutes: Self.defaultIdleRefreshMinutes)
         refreshTimer = Timer.scheduledTimer(
             timeInterval: nextRefreshInterval,
             target: self,
@@ -481,6 +507,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 planType: nil,
                 limitId: nil,
                 limitName: nil,
+                quotaSource: nil,
                 serviceTier: nil,
                 primaryUsed: nil,
                 secondaryUsed: nil,
@@ -863,6 +890,7 @@ def read_app_server_quota(timeout_seconds=8):
                     "planType": snapshot.get("planType"),
                     "limitId": snapshot.get("limitId"),
                     "limitName": snapshot.get("limitName"),
+                    "quotaSource": "app_server",
                     "primaryUsed": primary.get("usedPercent"),
                     "secondaryUsed": secondary.get("usedPercent"),
                     "primaryReset": primary.get("resetsAt"),
@@ -1093,6 +1121,7 @@ for thread_id, rollout_path, title, model, effort in rows:
                     "planType": rate_limits.get("plan_type"),
                     "limitId": rate_limits.get("limit_id"),
                     "limitName": rate_limits.get("limit_name"),
+                    "quotaSource": "rollout",
                     "primaryUsed": primary.get("used_percent"),
                     "secondaryUsed": secondary.get("used_percent"),
                     "primaryReset": primary.get("resets_at"),
@@ -1116,6 +1145,7 @@ for thread_id, rollout_path, title, model, effort in rows:
                         "planType": rate_limits.get("plan_type"),
                         "limitId": rate_limits.get("limit_id"),
                         "limitName": rate_limits.get("limit_name"),
+                        "quotaSource": "rollout",
                         "primaryUsed": primary.get("used_percent"),
                         "secondaryUsed": secondary.get("used_percent"),
                         "primaryReset": primary.get("resets_at"),
@@ -1208,6 +1238,7 @@ if app_server_snapshot:
         "planType": app_server_snapshot.get("planType"),
         "limitId": app_server_snapshot.get("limitId"),
         "limitName": app_server_snapshot.get("limitName"),
+        "quotaSource": app_server_snapshot.get("quotaSource"),
         "primaryUsed": app_server_snapshot.get("primaryUsed"),
         "secondaryUsed": app_server_snapshot.get("secondaryUsed"),
         "primaryReset": app_server_snapshot.get("primaryReset"),

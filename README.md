@@ -119,7 +119,7 @@ Top         Codex Battery  21.5M
 - Around `1.0x`: on track to reach reset exactly
 - Above `1.0x`: ahead of budget and may run out early
 
-`Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp.
+`Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails before any live quota has been cached, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp. After a live quota snapshot has been cached, a failed refresh keeps that snapshot and marks the row as `Stale` instead of replacing it with older rollout-log quota.
 
 If a 5-hour or weekly reset window has already passed but Codex has not written a fresh usage event yet, Codex Battery treats that window as reset and shows `100%` plus `reset`.
 
@@ -152,7 +152,7 @@ To keep power use low, it asks the local Codex app-server for the current accoun
 
 When background Codex work is still running, the menu shows an `Activity` line such as `2 thread(s) active in 2m`. That is a reminder that quota may keep moving even if you are not actively typing in the current thread.
 
-If Codex is temporarily writing, checkpointing, or migrating `~/.codex/state_5.sqlite`, a read can fail for a moment. Codex Battery retries several times. If it still cannot read the database but has a previous successful snapshot, it keeps showing that snapshot and marks the check as `Stale` instead of replacing the menu with an error.
+If Codex is temporarily writing, checkpointing, or migrating `~/.codex/state_5.sqlite`, or if the local app-server quota read fails for a moment, a refresh can fail. Codex Battery retries several times. If it already has a previous successful live snapshot, it keeps showing that snapshot and marks the check as `Stale` instead of replacing the menu with an error or an older rollout-log quota.
 
 ## Accuracy
 
