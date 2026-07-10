@@ -135,7 +135,7 @@ Codex Battery refreshes:
 - Every 5 minutes when recent Codex activity is detected
 - Every 5 minutes after a failed refresh
 
-Opening the menu does not refresh by default, because quota refresh starts the local Codex app-server and can cost power. If you want the old behavior, enable `Sync on open: On` in the menu.
+Opening the menu keeps the quota display aligned with the official panel: if the cached account-quota snapshot is more than 60 seconds old, Codex Battery performs a quota-only refresh. Repeated menu opens are debounced for 60 seconds and do not postpone the existing background refresh schedule. Enable `Full sync on open: On` only if you also want today/top/forecast statistics recalculated when opening the menu, at most once per minute.
 
 To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 5 minutes. That probe only reads local state and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active, it triggers an account-quota refresh.
 

@@ -170,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let defaultFailureRetryMinutes = 5
     private static let defaultActivityProbeSeconds = 300
     private static let defaultDetailRefreshMinutes = 60
+    private static let menuQuotaFreshnessSeconds: TimeInterval = 60
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -191,8 +192,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastGoodInfo: QuotaInfo?
     private var lastDetailAttemptAt: Date?
     private var lastProbeTriggeredRefreshAt: Date?
+    private var lastMenuRefreshAttemptAt: Date?
     private var lastObservedActiveThreads = 0
     private var lastObservedActiveWindowSeconds = 120
+    private var pendingScheduledRefresh = false
 
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
@@ -230,16 +233,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func refreshNow() {
-        performRefresh(includeDetails: true)
+        performRefresh(includeDetails: true, reschedule: true)
     }
 
     @objc private func refreshScheduled() {
+        guard !isRefreshing else {
+            pendingScheduledRefresh = true
+            return
+        }
         let detailInterval = Self.detailRefreshInterval()
         let detailsAreDue = lastDetailAttemptAt.map { Date().timeIntervalSince($0) >= detailInterval } ?? true
-        performRefresh(includeDetails: detailsAreDue)
+        performRefresh(includeDetails: detailsAreDue, reschedule: true)
     }
 
-    private func performRefresh(includeDetails: Bool) {
+    private func performRefresh(includeDetails: Bool, reschedule: Bool) {
         guard !isRefreshing else { return }
         isRefreshing = true
         if includeDetails {
@@ -312,16 +319,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.render(info)
                 }
                 self.isRefreshing = false
-                self.scheduleNextRefresh(for: quotaInfo.ok ? info : nil)
+                if self.pendingScheduledRefresh {
+                    self.pendingScheduledRefresh = false
+                    self.refreshScheduled()
+                } else if reschedule {
+                    self.scheduleNextRefresh(for: quotaInfo.ok ? info : nil)
+                } else if !quotaInfo.ok {
+                    self.scheduleFailureRetryPreservingEarlierTimer()
+                }
             }
         }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
-        if UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey) {
-            refreshNow()
+        guard !isRefreshing else { return }
+        let now = Date()
+        let lastAttemptIsRecent = lastMenuRefreshAttemptAt.map {
+            let age = now.timeIntervalSince($0)
+            return age >= 0 && age < Self.menuQuotaFreshnessSeconds
+        } ?? false
+        guard !lastAttemptIsRecent else { return }
+        let fullSyncEnabled = UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey)
+        let snapshotIsFresh = Self.parseQuotaTimestamp(lastGoodInfo?.timestamp).map { timestamp in
+            let age = now.timeIntervalSince(timestamp)
+            return age >= 0 && age < Self.menuQuotaFreshnessSeconds
+        } ?? false
+        guard fullSyncEnabled || !snapshotIsFresh else { return }
+        lastMenuRefreshAttemptAt = now
+        performRefresh(includeDetails: fullSyncEnabled, reschedule: false)
+    }
+
+    private static func parseQuotaTimestamp(_ timestamp: String?) -> Date? {
+        guard var timestamp, !timestamp.isEmpty else { return nil }
+        if timestamp.hasSuffix("Z") {
+            timestamp = String(timestamp.dropLast()) + "+00:00"
         }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: timestamp) ?? fallbackFormatter.date(from: timestamp)
     }
 
     private func render(_ info: QuotaInfo) {
@@ -444,7 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func syncOnOpenTitle() -> String {
         let enabled = UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey)
-        return enabled ? t("打开菜单时刷新：开", "Sync on open: On") : t("打开菜单时刷新：关", "Sync on open: Off")
+        return enabled ? t("打开时完整刷新：开", "Full sync on open: On") : t("打开时完整刷新：关", "Full sync on open: Off")
     }
 
     @objc private func toggleSyncOnOpen() {
@@ -472,6 +510,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             : Self.refreshInterval(for: Self.idleRefreshMinutesKey, defaultMinutes: Self.defaultIdleRefreshMinutes)
         refreshTimer = Timer.scheduledTimer(
             timeInterval: nextRefreshInterval,
+            target: self,
+            selector: #selector(refreshScheduled),
+            userInfo: nil,
+            repeats: false
+        )
+    }
+
+    private func scheduleFailureRetryPreservingEarlierTimer() {
+        let retryInterval = Self.refreshInterval(
+            for: Self.failureRetryMinutesKey,
+            defaultMinutes: Self.defaultFailureRetryMinutes
+        )
+        let retryDate = Date().addingTimeInterval(retryInterval)
+        if let refreshTimer, refreshTimer.isValid, refreshTimer.fireDate <= retryDate {
+            return
+        }
+        refreshTimer?.invalidate()
+        nextRefreshInterval = retryInterval
+        refreshTimer = Timer.scheduledTimer(
+            timeInterval: retryInterval,
             target: self,
             selector: #selector(refreshScheduled),
             userInfo: nil,
@@ -914,7 +972,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.29"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.30"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
