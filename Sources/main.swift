@@ -113,6 +113,39 @@ struct QuotaInfo: Decodable {
     let topThreadTokens: Int?
     let activeThreads: Int?
     let activeWindowSeconds: Int?
+
+    func replacingQuota(with quota: QuotaInfo, activeThreads: Int, activeWindowSeconds: Int) -> QuotaInfo {
+        QuotaInfo(
+            ok: quota.ok,
+            error: quota.error,
+            timestamp: quota.timestamp,
+            planType: quota.planType,
+            limitId: quota.limitId,
+            limitName: quota.limitName,
+            quotaSource: quota.quotaSource,
+            serviceTier: serviceTier ?? quota.serviceTier,
+            primaryUsed: quota.primaryUsed,
+            secondaryUsed: quota.secondaryUsed,
+            primaryReset: quota.primaryReset,
+            secondaryReset: quota.secondaryReset,
+            title: title,
+            model: model,
+            effort: effort,
+            totalTokens: totalTokens,
+            todayTokens: todayTokens,
+            todayVs3DayAvg: todayVs3DayAvg,
+            weeklyBurnPctPerHour: weeklyBurnPctPerHour,
+            weeklyEtaHours: weeklyEtaHours,
+            weeklyBudgetRatio: weeklyBudgetRatio,
+            weeklyDaysEarly: weeklyDaysEarly,
+            weeklyActiveBudgetRatio: weeklyActiveBudgetRatio,
+            risk: risk,
+            topThread: topThread,
+            topThreadTokens: topThreadTokens,
+            activeThreads: activeThreads,
+            activeWindowSeconds: activeWindowSeconds
+        )
+    }
 }
 
 struct ActivityProbeInfo: Decodable {
@@ -131,10 +164,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let idleRefreshMinutesKey = "idleRefreshMinutes"
     private static let failureRetryMinutesKey = "failureRetryMinutes"
     private static let activityProbeSecondsKey = "activityProbeSeconds"
+    private static let detailRefreshMinutesKey = "detailRefreshMinutes"
     private static let defaultActiveRefreshMinutes = 5
     private static let defaultIdleRefreshMinutes = 30
     private static let defaultFailureRetryMinutes = 5
-    private static let defaultActivityProbeSeconds = 60
+    private static let defaultActivityProbeSeconds = 300
+    private static let defaultDetailRefreshMinutes = 60
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -154,8 +189,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isRefreshing = false
     private var nextRefreshInterval: TimeInterval = 300
     private var lastGoodInfo: QuotaInfo?
-    private var lastKnownSourceUpdatedAt: String?
+    private var lastDetailAttemptAt: Date?
     private var lastProbeTriggeredRefreshAt: Date?
+    private var lastObservedActiveThreads = 0
+    private var lastObservedActiveWindowSeconds = 120
 
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
@@ -193,35 +230,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func refreshNow() {
-        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: t("刷新中...", "Refreshing..."))
+        performRefresh(includeDetails: true)
+    }
+
+    @objc private func refreshScheduled() {
+        let detailInterval = Self.detailRefreshInterval()
+        let detailsAreDue = lastDetailAttemptAt.map { Date().timeIntervalSince($0) >= detailInterval } ?? true
+        performRefresh(includeDetails: detailsAreDue)
+    }
+
+    private func performRefresh(includeDetails: Bool) {
         guard !isRefreshing else { return }
         isRefreshing = true
-        setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: t("刷新中...", "Refreshing..."))
-        setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
-        setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
-        setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
-        setInfoItem(topItem, label: "Top", value: "-")
-        setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
+        if includeDetails {
+            lastDetailAttemptAt = Date()
+        }
+        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: t("刷新中...", "Refreshing..."))
+        if includeDetails || lastGoodInfo == nil {
+            setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: t("刷新中...", "Refreshing..."))
+            setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
+            setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
+            setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
+            setInfoItem(topItem, label: "Top", value: "-")
+            setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
+        }
         DispatchQueue.global(qos: .utility).async {
-            let info = Self.readQuota()
+            let quotaInfo = Self.readQuotaOnly()
+            let detailInfo = includeDetails ? Self.readDetails() : nil
             DispatchQueue.main.async {
-                var scheduleAsFailure = false
-                if info.ok, self.shouldKeepCachedQuota(over: info), let cached = self.lastGoodInfo {
-                    self.render(cached)
-                    self.setInfoItem(
-                        self.updatedItem,
-                        label: self.t("旧数据", "Stale"),
-                        value: self.formatDataTimestamp(cached.timestamp)
+                let info: QuotaInfo
+                if let detailInfo, detailInfo.ok {
+                    self.lastObservedActiveThreads = detailInfo.activeThreads ?? 0
+                    self.lastObservedActiveWindowSeconds = detailInfo.activeWindowSeconds ?? 120
+                    if quotaInfo.ok {
+                        info = detailInfo.replacingQuota(
+                            with: quotaInfo,
+                            activeThreads: self.lastObservedActiveThreads,
+                            activeWindowSeconds: self.lastObservedActiveWindowSeconds
+                        )
+                    } else if let cached = self.lastGoodInfo, cached.quotaSource == "app_server" {
+                        info = detailInfo.replacingQuota(
+                            with: cached,
+                            activeThreads: self.lastObservedActiveThreads,
+                            activeWindowSeconds: self.lastObservedActiveWindowSeconds
+                        )
+                    } else {
+                        info = detailInfo
+                    }
+                } else if quotaInfo.ok, let cached = self.lastGoodInfo {
+                    info = cached.replacingQuota(
+                        with: quotaInfo,
+                        activeThreads: self.lastObservedActiveThreads,
+                        activeWindowSeconds: self.lastObservedActiveWindowSeconds
                     )
-                    self.iconView.tooltipText = self.t(
-                        "实时额度读取失败，显示上次成功数据",
-                        "Live quota read failed, showing last successful data"
-                    )
-                    scheduleAsFailure = true
-                } else if info.ok {
+                } else {
+                    info = quotaInfo
+                }
+                if info.ok {
                     self.lastGoodInfo = info
-                    self.lastKnownSourceUpdatedAt = info.timestamp
                     self.render(info)
+                    if !quotaInfo.ok, info.quotaSource == "app_server" {
+                        self.setInfoItem(
+                            self.updatedItem,
+                            label: self.t("旧数据", "Stale"),
+                            value: self.formatDataTimestamp(info.timestamp)
+                        )
+                        self.iconView.tooltipText = self.t(
+                            "实时额度读取失败，显示上次成功数据",
+                            "Live quota read failed, showing last successful data"
+                        )
+                    }
                 } else if let cached = self.lastGoodInfo {
                     self.render(cached)
                     self.setInfoItem(
@@ -234,14 +312,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.render(info)
                 }
                 self.isRefreshing = false
-                self.scheduleNextRefresh(for: scheduleAsFailure ? nil : info)
+                self.scheduleNextRefresh(for: quotaInfo.ok ? info : nil)
             }
         }
-    }
-
-    private func shouldKeepCachedQuota(over info: QuotaInfo) -> Bool {
-        guard let cached = lastGoodInfo else { return false }
-        return cached.quotaSource == "app_server" && info.quotaSource == "rollout"
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -387,20 +460,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refreshTimer = Timer.scheduledTimer(
                 timeInterval: nextRefreshInterval,
                 target: self,
-                selector: #selector(refreshNow),
+                selector: #selector(refreshScheduled),
                 userInfo: nil,
                 repeats: false
             )
             return
         }
-        let activeThreads = info.activeThreads ?? 0
+        let activeThreads = lastObservedActiveThreads
         nextRefreshInterval = activeThreads > 0
             ? Self.refreshInterval(for: Self.activeRefreshMinutesKey, defaultMinutes: Self.defaultActiveRefreshMinutes)
             : Self.refreshInterval(for: Self.idleRefreshMinutesKey, defaultMinutes: Self.defaultIdleRefreshMinutes)
         refreshTimer = Timer.scheduledTimer(
             timeInterval: nextRefreshInterval,
             target: self,
-            selector: #selector(refreshNow),
+            selector: #selector(refreshScheduled),
             userInfo: nil,
             repeats: false
         )
@@ -425,10 +498,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard probe.ok else { return }
                 let activeThreads = probe.activeThreads ?? 0
                 let windowSeconds = probe.activeWindowSeconds ?? 120
-                let sourceAdvanced = Self.isLaterTimestamp(probe.sourceUpdatedAt, than: self.lastKnownSourceUpdatedAt)
-                let becameActive = activeThreads > 0 && (self.lastGoodInfo?.activeThreads ?? 0) == 0
+                let becameActive = activeThreads > 0 && self.lastObservedActiveThreads == 0
+                self.lastObservedActiveThreads = activeThreads
+                self.lastObservedActiveWindowSeconds = windowSeconds
 
-                if let cached = self.lastGoodInfo, (cached.activeThreads ?? 0) == 0 {
+                if self.lastGoodInfo != nil {
                     self.setInfoItem(
                         self.activityItem,
                         label: self.t("后台活动", "Activity"),
@@ -436,12 +510,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     )
                 }
 
-                guard sourceAdvanced || becameActive else { return }
-                if becameActive, let last = self.lastProbeTriggeredRefreshAt, Date().timeIntervalSince(last) < 240 {
+                guard becameActive else { return }
+                if let last = self.lastProbeTriggeredRefreshAt, Date().timeIntervalSince(last) < 240 {
                     return
                 }
                 self.lastProbeTriggeredRefreshAt = Date()
-                self.refreshNow()
+                self.refreshScheduled()
             }
         }
     }
@@ -458,26 +532,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return TimeInterval(max(30, seconds))
     }
 
-    private static func isLaterTimestamp(_ lhs: String?, than rhs: String?) -> Bool {
-        guard let lhsDate = parseCodexTimestamp(lhs) else { return false }
-        guard let rhsDate = parseCodexTimestamp(rhs) else { return true }
-        return lhsDate.timeIntervalSince(rhsDate) > 0.5
+    private static func detailRefreshInterval() -> TimeInterval {
+        let configured = UserDefaults.standard.integer(forKey: detailRefreshMinutesKey)
+        let minutes = configured > 0 ? configured : defaultDetailRefreshMinutes
+        return TimeInterval(max(60, minutes) * 60)
     }
 
-    private static func parseCodexTimestamp(_ timestamp: String?) -> Date? {
-        guard var timestamp, !timestamp.isEmpty else { return nil }
-        if timestamp.hasSuffix("Z") {
-            timestamp = String(timestamp.dropLast()) + "+00:00"
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-        fallbackFormatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: timestamp) ?? fallbackFormatter.date(from: timestamp)
+    private static func readQuotaOnly() -> QuotaInfo {
+        return readPythonOutput(as: QuotaInfo.self, arguments: ["--quota-only"])
     }
 
-    private static func readQuota() -> QuotaInfo {
-        return readPythonOutput(as: QuotaInfo.self, arguments: [])
+    private static func readDetails() -> QuotaInfo {
+        return readPythonOutput(as: QuotaInfo.self, arguments: ["--details-only"])
     }
 
     private static func readActivityProbe() -> ActivityProbeInfo {
@@ -848,7 +914,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.28"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.29"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -1034,7 +1100,14 @@ if len(sys.argv) > 1 and sys.argv[1] == "--activity-probe":
     print(json.dumps(read_activity_probe(), ensure_ascii=False))
     raise SystemExit(0)
 
-app_server_snapshot = read_app_server_quota()
+details_only = len(sys.argv) > 1 and sys.argv[1] == "--details-only"
+app_server_snapshot = None if details_only else read_app_server_quota()
+
+if len(sys.argv) > 1 and sys.argv[1] == "--quota-only":
+    if app_server_snapshot:
+        print(json.dumps(empty_stats_out(app_server_snapshot), ensure_ascii=False))
+        raise SystemExit(0)
+    fail("Cannot read live Codex quota")
 
 if not db_path.exists():
     if app_server_snapshot:

@@ -137,7 +137,9 @@ Codex Battery refreshes:
 
 Opening the menu does not refresh by default, because quota refresh starts the local Codex app-server and can cost power. If you want the old behavior, enable `Sync on open: On` in the menu.
 
-To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 60 seconds. That probe only reads local state, the Codex speed-tier setting, and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active or the local data source timestamp advance, it triggers a full refresh immediately.
+To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 5 minutes. That probe only reads local state and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active, it triggers an account-quota refresh.
+
+Automatic 5-minute refreshes only read the official account quota. The heavier local scan used for today/top/forecast statistics runs at startup, on manual refresh, and at most once per hour in the background. This keeps the quota rings current without repeatedly parsing recent thread history.
 
 You can tune the automatic intervals:
 
@@ -145,10 +147,11 @@ You can tune the automatic intervals:
 defaults write local.codex.battery.menu activeRefreshMinutes -int 5
 defaults write local.codex.battery.menu idleRefreshMinutes -int 30
 defaults write local.codex.battery.menu failureRetryMinutes -int 5
-defaults write local.codex.battery.menu activityProbeSeconds -int 60
+defaults write local.codex.battery.menu activityProbeSeconds -int 300
+defaults write local.codex.battery.menu detailRefreshMinutes -int 60
 ```
 
-To keep power use low, it asks the local Codex app-server for the current account quota, then checks only the most recent active threads and reads the tail of each rollout log for today/top/forecast statistics.
+To keep power use low, regular automatic refreshes only ask the local Codex app-server for the current account quota. The less frequent detail refresh checks recent active threads and reads rollout tails for today/top/forecast statistics.
 
 When background Codex work is still running, the menu shows an `Activity` line such as `2 thread(s) active in 2m`. That is a reminder that quota may keep moving even if you are not actively typing in the current thread.
 

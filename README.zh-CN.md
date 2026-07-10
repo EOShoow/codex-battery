@@ -133,7 +133,9 @@ Codex Battery 会在这些时机刷新：
 
 打开菜单默认不会刷新，因为额度刷新会启动本机 Codex app-server，有一定功耗。如果你想恢复旧行为，可以在菜单里打开 `打开菜单时刷新：开`。
 
-为了避免你从空闲重新开始工作后还卡在 30 分钟等待里，Codex Battery 会额外每 60 秒跑一次轻量活动探针。这个探针只读本机状态、Codex 速度档位和最近 rollout 日志尾部，不启动 Codex app-server；如果发现从空闲变成活跃，或本地数据源时间戳变新，就立即触发一次完整刷新。
+为了避免你从空闲重新开始工作后还卡在 30 分钟等待里，Codex Battery 会额外每 5 分钟跑一次轻量活动探针。这个探针只读本机状态和最近 rollout 日志尾部，不启动 Codex app-server；如果发现从空闲变成活跃，就触发一次账号额度刷新。
+
+活跃期间每 5 分钟的自动刷新只读取官方账号额度。用于计算今日消耗、Top 和周预测的本地重型扫描只在启动、手动刷新以及后台每小时最多一次时运行，让额度圆环保持新鲜，同时避免反复解析近期线程历史。
 
 自动刷新间隔也可以自己填：
 
@@ -141,10 +143,11 @@ Codex Battery 会在这些时机刷新：
 defaults write local.codex.battery.menu activeRefreshMinutes -int 5
 defaults write local.codex.battery.menu idleRefreshMinutes -int 30
 defaults write local.codex.battery.menu failureRetryMinutes -int 5
-defaults write local.codex.battery.menu activityProbeSeconds -int 60
+defaults write local.codex.battery.menu activityProbeSeconds -int 300
+defaults write local.codex.battery.menu detailRefreshMinutes -int 60
 ```
 
-为了降低功耗，它会先向本机 Codex app-server 获取当前账号额度，再只检查最近活跃的线程，并读取每个 rollout 日志的尾部来计算今日、Top 和预测统计。
+为了降低功耗，常规自动刷新只向本机 Codex app-server 获取当前账号额度；频率更低的详情刷新才会检查最近活跃线程并读取 rollout 尾部，计算今日、Top 和预测统计。
 
 如果后台 Codex 任务仍在运行，菜单会显示 `后台活动` 行，例如 `近2分钟 2 个线程仍在消耗`。这用于提醒你：即使当前对话没有输入，额度也可能因为后台自动化继续变化。
 
