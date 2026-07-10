@@ -680,7 +680,10 @@ db_path = home / ".codex" / "state_5.sqlite"
 session_index_path = home / ".codex" / "session_index.jsonl"
 global_state_path = home / ".codex" / ".codex-global-state.json"
 config_path = home / ".codex" / "config.toml"
-codex_binary = pathlib.Path("/Applications/Codex.app/Contents/Resources/codex")
+codex_binary_candidates = [
+    pathlib.Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
+    pathlib.Path("/Applications/Codex.app/Contents/Resources/codex"),
+]
 tz = timezone(timedelta(hours=8))
 now = datetime.now(tz)
 today = now.date()
@@ -819,7 +822,8 @@ def read_recent_json(path, max_lines=1200):
     return reversed(lines)
 
 def read_app_server_quota(timeout_seconds=8):
-    if not codex_binary.exists():
+    codex_binary = next((path for path in codex_binary_candidates if path.is_file()), None)
+    if codex_binary is None:
         return None
     try:
         proc = subprocess.Popen(
@@ -844,7 +848,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.27"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.28"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [

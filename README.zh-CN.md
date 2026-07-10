@@ -166,7 +166,9 @@ Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格
 
 - 已在 2026-05-05 的 Codex Desktop `26.429.30905` / app-server 协议上验证
 - 已在 2026-05-22 的 Codex Desktop `26.519.31651` 上验证
+- 已在 2026-07-10 的 ChatGPT for macOS 内置 Codex 上验证
 - 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度
+- 同时兼容 `/Applications/ChatGPT.app` 内置 app-server 和旧版 `/Applications/Codex.app`
 - 读取 `~/.codex/state_5.sqlite`
 - 优先从 `~/.codex/config.toml` 读取 speed 档位（新字段 `service_tier`，兼容旧字段 `default-service-tier`），再回退到 `~/.codex/.codex-global-state.json`
 - 读取包含 `token_count.rate_limits` 的近期 rollout 日志

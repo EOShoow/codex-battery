@@ -170,7 +170,9 @@ Current known baseline:
 
 - Verified with Codex Desktop `26.429.30905` / app-server protocol as of 2026-05-05
 - Verified with Codex Desktop `26.519.31651` as of 2026-05-22
+- Verified with Codex in ChatGPT for macOS as of 2026-07-10
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
+- Supports the bundled app-server in both `/Applications/ChatGPT.app` and the legacy `/Applications/Codex.app`
 - Reads `~/.codex/state_5.sqlite`
 - Reads the speed tier from `~/.codex/config.toml` (`service_tier`, with legacy `default-service-tier` fallback), then falls back to `~/.codex/.codex-global-state.json`
 - Reads recent rollout logs that contain `token_count.rate_limits`
