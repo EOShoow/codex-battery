@@ -50,9 +50,10 @@ final class QuotaIconView: NSView {
         context.addPath(path)
         context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.86).cgColor)
         if clamped < 100 {
+            let activeLength = perimeter * CGFloat(clamped) / 100
             context.setLineDash(
-                phase: 0,
-                lengths: [perimeter * CGFloat(clamped) / 100, perimeter]
+                phase: activeLength,
+                lengths: [activeLength, perimeter - activeLength]
             )
         }
         context.strokePath()
@@ -62,7 +63,8 @@ final class QuotaIconView: NSView {
     private func roundedRectPath(in rect: NSRect, radius: CGFloat) -> CGPath {
         let r = min(radius, min(rect.width, rect.height) / 2)
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: rect.maxX - r, y: rect.maxY))
+        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.maxY))
         path.addArc(
             center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
             radius: r,
@@ -94,6 +96,7 @@ final class QuotaIconView: NSView {
             endAngle: .pi / 2,
             clockwise: true
         )
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
         path.closeSubpath()
         return path
     }
@@ -119,8 +122,8 @@ final class QuotaIconView: NSView {
         default:
             positions = []
         }
-        let spacing = NSSize(width: 2.35, height: 1.95)
-        let pipRadius: CGFloat = 1.12
+        let spacing = NSSize(width: 2.5, height: 2.05)
+        let pipRadius: CGFloat = 1.28
         NSColor.labelColor.withAlphaComponent(0.9).setFill()
         for position in positions {
             let center = NSPoint(
@@ -961,7 +964,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.34"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.35"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
