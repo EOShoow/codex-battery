@@ -24,7 +24,7 @@ final class QuotaIconView: NSView {
         NSGraphicsContext.current?.shouldAntialias = true
         let outerRect = bounds.insetBy(dx: 2.5, dy: 2.5)
         drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 1.75)
-        drawRoundedRing(in: outerRect.insetBy(dx: 3.35, dy: 3.35), radius: 2.8, remaining: fiveHour, width: 1.2)
+        drawRoundedRing(in: outerRect.insetBy(dx: 2.15, dy: 2.15), radius: 3.25, remaining: fiveHour, width: 1.75)
         drawResetPips(availableResetCredits)
     }
 
@@ -119,8 +119,8 @@ final class QuotaIconView: NSView {
         default:
             positions = []
         }
-        let spacing = NSSize(width: 2.25, height: 1.85)
-        let pipRadius: CGFloat = 0.98
+        let spacing = NSSize(width: 2.35, height: 1.95)
+        let pipRadius: CGFloat = 1.12
         NSColor.labelColor.withAlphaComponent(0.9).setFill()
         for position in positions {
             let center = NSPoint(
@@ -961,7 +961,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.33"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.34"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
