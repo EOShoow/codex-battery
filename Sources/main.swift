@@ -23,8 +23,8 @@ final class QuotaIconView: NSView {
         super.draw(dirtyRect)
         NSGraphicsContext.current?.shouldAntialias = true
         let outerRect = bounds.insetBy(dx: 2.5, dy: 2.5)
-        drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 1.75)
-        drawRoundedRing(in: outerRect.insetBy(dx: 2.15, dy: 2.15), radius: 3.25, remaining: fiveHour, width: 1.75)
+        drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 1.5)
+        drawRoundedRing(in: outerRect.insetBy(dx: 2.3, dy: 2.3), radius: 2.7, remaining: fiveHour, width: 1.5)
         drawResetPips(availableResetCredits)
     }
 
@@ -50,7 +50,9 @@ final class QuotaIconView: NSView {
         context.addPath(path)
         context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.86).cgColor)
         if clamped < 100 {
-            let activeLength = perimeter * CGFloat(clamped) / 100
+            let proportionalActiveLength = perimeter * CGFloat(clamped) / 100
+            let minimumGapLength: CGFloat = 1.35
+            let activeLength = min(proportionalActiveLength, perimeter - minimumGapLength)
             context.setLineDash(
                 phase: activeLength,
                 lengths: [activeLength, perimeter - activeLength]
@@ -112,23 +114,23 @@ final class QuotaIconView: NSView {
         case 1:
             positions = [(0, 0)]
             spacing = .zero
-            pipRadius = 3.2
+            pipRadius = 3.0
         case 2:
             positions = [(-1, 1), (1, -1)]
             spacing = NSSize(width: 2.9, height: 2.4)
-            pipRadius = 2.3
+            pipRadius = 2.2
         case 3:
             positions = [(-1, 1), (0, 0), (1, -1)]
-            spacing = NSSize(width: 3.1, height: 2.6)
-            pipRadius = 2.0
+            spacing = NSSize(width: 3.35, height: 2.85)
+            pipRadius = 1.8
         case 4:
             positions = [(-1, 1), (1, 1), (-1, -1), (1, -1)]
             spacing = NSSize(width: 2.9, height: 2.4)
-            pipRadius = 2.0
+            pipRadius = 1.8
         case 5:
             positions = [(-1, 1), (1, 1), (0, 0), (-1, -1), (1, -1)]
             spacing = NSSize(width: 2.9, height: 2.45)
-            pipRadius = 1.85
+            pipRadius = 1.6
         case 6:
             positions = [(-1, 1), (-1, 0), (-1, -1), (1, 1), (1, 0), (1, -1)]
             spacing = NSSize(width: 2.8, height: 3.1)
@@ -978,7 +980,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.36"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.37"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
