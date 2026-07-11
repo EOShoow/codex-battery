@@ -106,24 +106,38 @@ final class QuotaIconView: NSView {
         let normalizedCount = max(0, count)
         let visibleCount = min(6, normalizedCount)
         let positions: [(CGFloat, CGFloat)]
+        let spacing: NSSize
+        let pipRadius: CGFloat
         switch visibleCount {
         case 1:
             positions = [(0, 0)]
+            spacing = .zero
+            pipRadius = 3.2
         case 2:
             positions = [(-1, 1), (1, -1)]
+            spacing = NSSize(width: 2.9, height: 2.4)
+            pipRadius = 2.3
         case 3:
             positions = [(-1, 1), (0, 0), (1, -1)]
+            spacing = NSSize(width: 3.1, height: 2.6)
+            pipRadius = 2.0
         case 4:
             positions = [(-1, 1), (1, 1), (-1, -1), (1, -1)]
+            spacing = NSSize(width: 2.9, height: 2.4)
+            pipRadius = 2.0
         case 5:
             positions = [(-1, 1), (1, 1), (0, 0), (-1, -1), (1, -1)]
+            spacing = NSSize(width: 2.9, height: 2.45)
+            pipRadius = 1.85
         case 6:
             positions = [(-1, 1), (-1, 0), (-1, -1), (1, 1), (1, 0), (1, -1)]
+            spacing = NSSize(width: 2.8, height: 3.1)
+            pipRadius = 1.5
         default:
             positions = []
+            spacing = .zero
+            pipRadius = 0
         }
-        let spacing = NSSize(width: 2.5, height: 2.05)
-        let pipRadius: CGFloat = 1.28
         NSColor.labelColor.withAlphaComponent(0.9).setFill()
         for position in positions {
             let center = NSPoint(
@@ -964,7 +978,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.35"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.36"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
