@@ -12,7 +12,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 
 - Outer ring: weekly quota remaining
 - Inner ring: 5-hour quota remaining
-- Center bolt: Codex speed tier is set to fast
+- Center number: available full-reset credits
 - Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
@@ -165,7 +165,7 @@ Treat it as a fast dashboard, not an accounting source of truth.
 
 ## Compatibility
 
-Codex Battery depends on Codex Desktop's local app-server protocol and local state format, especially `account/rateLimits/read`, `~/.codex/state_5.sqlite`, `~/.codex/config.toml`, and the rollout log entries referenced by that database.
+Codex Battery depends on Codex Desktop's local app-server protocol and local state format, especially `account/rateLimits/read`, `~/.codex/state_5.sqlite`, and the rollout log entries referenced by that database.
 
 This is not an official public Codex API. If a future Codex Desktop update changes the app-server protocol, local database schema, log path layout, or `token_count` event format, Codex Battery may stop showing data until it is updated.
 
@@ -177,7 +177,7 @@ Current known baseline:
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
 - Supports the bundled app-server in both `/Applications/ChatGPT.app` and the legacy `/Applications/Codex.app`
 - Reads `~/.codex/state_5.sqlite`
-- Reads the speed tier from `~/.codex/config.toml` (`service_tier`, with legacy `default-service-tier` fallback), then falls back to `~/.codex/.codex-global-state.json`
+- Reads the available full-reset count from `rateLimitResetCredits.availableCount`; the center stays blank when that live field is unavailable
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
 If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
@@ -195,7 +195,6 @@ Codex Battery does not upload your rollout logs, thread contents, or statistics.
 It also reads locally:
 
 - `~/.codex/state_5.sqlite`
-- `~/.codex/config.toml` for the local Codex speed-tier setting
 - recent rollout log paths referenced by that database
 
 Thread titles are displayed locally so you can see which conversation is consuming tokens.

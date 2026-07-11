@@ -20,7 +20,7 @@ Codex Battery 会把 Codex 额度变成一个紧凑的菜单栏信号：
 
 - 外圈：1 周额度剩余
 - 内圈：5 小时额度剩余
-- 中心闪电：Codex 速度档位为快速
+- 中心数字：当前可用的完整额度重置次数
 - 菜单详情：重置时间、今日 token 消耗、周预算预测、当前消耗最高的 Codex 对话、近期后台活动、数据生成时间
 
 它只读取本机 `~/.codex` 下的状态和日志，不上传数据，不需要网页登录，也不打扰你的工作流。
@@ -161,7 +161,7 @@ defaults write local.codex.battery.menu detailRefreshMinutes -int 60
 
 ## 兼容性
 
-Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格式，主要是 `account/rateLimits/read`、`~/.codex/state_5.sqlite`、`~/.codex/config.toml`，以及这个数据库引用的 rollout 日志。
+Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格式，主要是 `account/rateLimits/read`、`~/.codex/state_5.sqlite`，以及这个数据库引用的 rollout 日志。
 
 这不是 Codex 官方公开 API。如果未来 Codex Desktop 升级后修改了 app-server 协议、本地数据库结构、日志路径布局，或者 `token_count` 事件格式，Codex Battery 可能会暂时读不到数据，需要更新后才能恢复。
 
@@ -173,7 +173,7 @@ Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格
 - 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度
 - 同时兼容 `/Applications/ChatGPT.app` 内置 app-server 和旧版 `/Applications/Codex.app`
 - 读取 `~/.codex/state_5.sqlite`
-- 优先从 `~/.codex/config.toml` 读取 speed 档位（新字段 `service_tier`，兼容旧字段 `default-service-tier`），再回退到 `~/.codex/.codex-global-state.json`
+- 从 `rateLimitResetCredits.availableCount` 读取可用完整重置次数；实时字段不可用时中心留空
 - 读取包含 `token_count.rate_limits` 的近期 rollout 日志
 
 如果 Codex 升级后失效，请开 issue，并附上 Codex 版本、macOS 版本、菜单里显示的错误文本。不要直接粘贴私密 rollout 日志；如果必须提供，请先自行检查和脱敏。
@@ -191,7 +191,6 @@ Codex Battery 不上传你的 rollout 日志、对话内容或本地统计。核
 它还会在本机读取：
 
 - `~/.codex/state_5.sqlite`
-- `~/.codex/config.toml` 中的本机 Codex speed 档位设置
 - 该数据库引用的近期 rollout 日志
 
 对话标题只在本机菜单里显示，用于判断哪个对话最耗 token。

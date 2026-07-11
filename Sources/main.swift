@@ -4,7 +4,7 @@ import Foundation
 final class QuotaIconView: NSView {
     var fiveHour = 0
     var week = 0
-    var serviceTier = "standard"
+    var availableResetCredits: Int?
     var tooltipText = "Codex quota" {
         didSet { toolTip = tooltipText }
     }
@@ -29,8 +29,8 @@ final class QuotaIconView: NSView {
         )
         let square = NSRect(origin: origin, size: NSSize(width: size, height: size)).insetBy(dx: 2.5, dy: 2.5)
         drawRing(in: square, remaining: week, width: 2.7)
-        drawRing(in: square.insetBy(dx: 3.5, dy: 3.5), remaining: fiveHour, width: 2.7)
-        drawCenterMark(in: square.insetBy(dx: 7.0, dy: 7.0), serviceTier: serviceTier)
+        drawRing(in: square.insetBy(dx: 3.25, dy: 3.25), remaining: fiveHour, width: 2.0)
+        drawResetCount(availableResetCredits)
     }
 
     private func drawRing(in rect: NSRect, remaining: Int, width: CGFloat) {
@@ -56,31 +56,23 @@ final class QuotaIconView: NSView {
         arc.stroke()
     }
 
-    private func drawCenterMark(in rect: NSRect, serviceTier: String) {
-        if Self.isStandardServiceTier(serviceTier) {
-            return
-        }
-        drawBolt(in: rect)
-    }
-
-    private static func isStandardServiceTier(_ serviceTier: String) -> Bool {
-        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized.isEmpty || normalized == "standard" || normalized == "default" || normalized == "none" || normalized == "null"
-    }
-
-    private func drawBolt(in rect: NSRect) {
-        let x = rect.midX
-        let y = rect.midY
-        let bolt = NSBezierPath()
-        bolt.move(to: NSPoint(x: x + 0.9, y: y + 4.0))
-        bolt.line(to: NSPoint(x: x - 3.0, y: y - 0.2))
-        bolt.line(to: NSPoint(x: x - 0.5, y: y - 0.2))
-        bolt.line(to: NSPoint(x: x - 1.0, y: y - 4.0))
-        bolt.line(to: NSPoint(x: x + 3.0, y: y + 0.6))
-        bolt.line(to: NSPoint(x: x + 0.5, y: y + 0.6))
-        bolt.close()
-        NSColor.labelColor.withAlphaComponent(0.9).setFill()
-        bolt.fill()
+    private func drawResetCount(_ count: Int?) {
+        guard let count else { return }
+        let normalizedCount = max(0, count)
+        let text = normalizedCount > 99 ? "99+" : String(normalizedCount)
+        let fontSize: CGFloat = text.count == 1 ? 7.5 : (text.count == 2 ? 5.5 : 4.0)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.9),
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        text.draw(
+            at: NSPoint(
+                x: bounds.midX - textSize.width / 2,
+                y: bounds.midY - textSize.height / 2 + 0.5
+            ),
+            withAttributes: attributes
+        )
     }
 }
 
@@ -92,7 +84,7 @@ struct QuotaInfo: Decodable {
     let limitId: String?
     let limitName: String?
     let quotaSource: String?
-    let serviceTier: String?
+    let availableResetCredits: Int?
     let primaryUsed: Double?
     let secondaryUsed: Double?
     let primaryReset: Int?
@@ -123,7 +115,7 @@ struct QuotaInfo: Decodable {
             limitId: quota.limitId,
             limitName: quota.limitName,
             quotaSource: quota.quotaSource,
-            serviceTier: serviceTier ?? quota.serviceTier,
+            availableResetCredits: quota.availableResetCredits,
             primaryUsed: quota.primaryUsed,
             secondaryUsed: quota.secondaryUsed,
             primaryReset: quota.primaryReset,
@@ -367,7 +359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let message = info.error ?? "No quota data"
             iconView.fiveHour = 0
             iconView.week = 0
-            iconView.serviceTier = "standard"
+            iconView.availableResetCredits = nil
             iconView.needsDisplay = true
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
@@ -386,7 +378,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let week = secondaryExpired ? 100 : max(0, 100 - Int(round(info.secondaryUsed ?? 0)))
         iconView.fiveHour = fiveHour
         iconView.week = week
-        iconView.serviceTier = info.serviceTier ?? "standard"
+        let availableResetCredits = info.availableResetCredits.map { max(0, $0) }
+        iconView.availableResetCredits = availableResetCredits
         iconView.needsDisplay = true
 
         let primaryReset = formatReset(info.primaryReset)
@@ -403,9 +396,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
         let dataAt = formatDataTimestamp(info.timestamp)
+        let resetCredits = availableResetCredits.map(String.init) ?? "-"
         let detail = useChinese ? """
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
+        可用重置: \(resetCredits)
         今日: \(today)  \(ratio)\(todayFlag)
         周预测: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
@@ -414,6 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         """ : """
         5h left: \(fiveHour)%  \(primaryReset)
         1w left: \(week)%  \(secondaryReset)
+        Resets available: \(resetCredits)
         Today: \(today)  \(ratio)\(todayFlag)
         Weekly forecast: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
@@ -632,7 +628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 limitId: nil,
                 limitName: nil,
                 quotaSource: nil,
-                serviceTier: nil,
+                availableResetCredits: nil,
                 primaryUsed: nil,
                 secondaryUsed: nil,
                 primaryReset: nil,
@@ -794,16 +790,10 @@ import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-try:
-    import tomllib
-except Exception:
-    tomllib = None
 
 home = pathlib.Path.home()
 db_path = home / ".codex" / "state_5.sqlite"
 session_index_path = home / ".codex" / "session_index.jsonl"
-global_state_path = home / ".codex" / ".codex-global-state.json"
-config_path = home / ".codex" / "config.toml"
 codex_binary_candidates = [
     pathlib.Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
     pathlib.Path("/Applications/Codex.app/Contents/Resources/codex"),
@@ -847,70 +837,6 @@ def parse_ts(value):
 
 def compact_title(value):
     return (value or "Unknown").replace("\n", " ")[:28]
-
-def normalize_service_tier(value):
-    if value is None:
-        return "standard"
-    text = str(value).strip().strip('"').strip("'")
-    return text or "standard"
-
-def read_config_service_tier(path):
-    if not path.exists():
-        return None
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception:
-        return None
-    if tomllib is not None:
-        try:
-            data = tomllib.loads(text)
-            value = data.get("service_tier")
-            if value is not None:
-                return normalize_service_tier(value)
-            desktop = data.get("desktop") or {}
-            value = data.get("default-service-tier")
-            if value is not None:
-                return normalize_service_tier(value)
-            value = desktop.get("default-service-tier")
-            if value is not None:
-                return normalize_service_tier(value)
-        except Exception:
-            pass
-    current_section = []
-    service_tier_value = None
-    legacy_service_tier_value = None
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current_section = [part.strip() for part in line.strip("[]").split(".")]
-            continue
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        normalized_key = key.strip()
-        if normalized_key == "service_tier" and current_section == []:
-            service_tier_value = normalize_service_tier(value.split("#", 1)[0])
-        if normalized_key == "default-service-tier" and current_section in ([], ["desktop"]):
-            legacy_service_tier_value = normalize_service_tier(value.split("#", 1)[0])
-    if service_tier_value:
-        return service_tier_value
-    if legacy_service_tier_value:
-        return legacy_service_tier_value
-    return None
-
-def read_service_tier(global_path, config_path):
-    config_value = read_config_service_tier(config_path)
-    if config_value:
-        return config_value
-    try:
-        data = json.loads(global_path.read_text(encoding="utf-8"))
-        state = data.get("electron-persisted-atom-state") or {}
-        value = state.get("default-service-tier")
-        return normalize_service_tier(value)
-    except Exception:
-        return "standard"
 
 def load_thread_names(path):
     names = {}
@@ -972,7 +898,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.30"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.31"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -1013,12 +939,14 @@ def read_app_server_quota(timeout_seconds=8):
                     return None
                 primary = snapshot.get("primary") or {}
                 secondary = snapshot.get("secondary") or {}
+                reset_credits = result.get("rateLimitResetCredits") or {}
                 return {
                     "timestamp": datetime.now(tz).isoformat(),
                     "planType": snapshot.get("planType"),
                     "limitId": snapshot.get("limitId"),
                     "limitName": snapshot.get("limitName"),
                     "quotaSource": "app_server",
+                    "availableResetCredits": reset_credits.get("availableCount"),
                     "primaryUsed": primary.get("usedPercent"),
                     "secondaryUsed": secondary.get("usedPercent"),
                     "primaryReset": primary.get("resetsAt"),
@@ -1049,7 +977,6 @@ def empty_stats_out(snapshot):
         "title": None,
         "model": None,
         "effort": None,
-        "serviceTier": read_service_tier(global_state_path, config_path),
         "totalTokens": None,
         "todayTokens": 0,
         "todayVs3DayAvg": None,
@@ -1082,16 +1009,6 @@ def read_activity_probe():
         ).fetchall()
         active = set()
         latest_source_at = 0.0
-        try:
-            if global_state_path.exists():
-                latest_source_at = max(latest_source_at, global_state_path.stat().st_mtime)
-        except Exception:
-            pass
-        try:
-            if config_path.exists():
-                latest_source_at = max(latest_source_at, config_path.stat().st_mtime)
-        except Exception:
-            pass
         cutoff_dt = now - timedelta(seconds=ACTIVE_WINDOW_SECONDS)
         cutoff_epoch = cutoff_dt.timestamp()
         for thread_id, rollout_path, updated_at, updated_at_ms in rows:
@@ -1465,7 +1382,6 @@ out.update({
     "ok": True,
     "todayTokens": today_tokens,
     "todayVs3DayAvg": today_vs_3,
-    "serviceTier": read_service_tier(global_state_path, config_path),
     "weeklyBurnPctPerHour": weekly_burn,
     "weeklyEtaHours": weekly_eta,
     "weeklyBudgetRatio": weekly_budget_ratio,
