@@ -22,57 +22,120 @@ final class QuotaIconView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         NSGraphicsContext.current?.shouldAntialias = true
-        let size = min(bounds.width, bounds.height)
-        let origin = NSPoint(
-            x: bounds.midX - size / 2,
-            y: bounds.midY - size / 2
-        )
-        let square = NSRect(origin: origin, size: NSSize(width: size, height: size)).insetBy(dx: 2.5, dy: 2.5)
-        drawRing(in: square, remaining: week, width: 2.7)
-        drawRing(in: square.insetBy(dx: 3.25, dy: 3.25), remaining: fiveHour, width: 2.0)
-        drawResetCount(availableResetCredits)
+        let outerRect = bounds.insetBy(dx: 2.5, dy: 2.5)
+        drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 2.4)
+        drawRoundedRing(in: outerRect.insetBy(dx: 3.35, dy: 3.35), radius: 2.8, remaining: fiveHour, width: 1.7)
+        drawResetPips(availableResetCredits)
     }
 
-    private func drawRing(in rect: NSRect, remaining: Int, width: CGFloat) {
-        let base = NSBezierPath(ovalIn: rect)
-        base.lineWidth = width
-        NSColor.labelColor.withAlphaComponent(0.18).setStroke()
-        base.stroke()
+    private func drawRoundedRing(in rect: NSRect, radius: CGFloat, remaining: Int, width: CGFloat) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let path = roundedRectPath(in: rect, radius: radius)
+        context.saveGState()
+        context.addPath(path)
+        context.setLineWidth(width)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.18).cgColor)
+        context.strokePath()
 
         let clamped = max(0, min(100, remaining))
-        guard clamped > 0 else { return }
+        guard clamped > 0 else {
+            context.restoreGState()
+            return
+        }
 
-        let arc = NSBezierPath()
-        arc.appendArc(
-            withCenter: NSPoint(x: rect.midX, y: rect.midY),
-            radius: min(rect.width, rect.height) / 2,
-            startAngle: 90,
-            endAngle: 90 - CGFloat(clamped) / 100 * 360,
-            clockwise: true
-        )
-        arc.lineWidth = width
-        arc.lineCapStyle = .round
-        NSColor.labelColor.withAlphaComponent(0.86).setStroke()
-        arc.stroke()
+        let effectiveRadius = min(radius, min(rect.width, rect.height) / 2)
+        let perimeter = 2 * (rect.width + rect.height - 4 * effectiveRadius) + 2 * .pi * effectiveRadius
+        context.addPath(path)
+        context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.86).cgColor)
+        if clamped < 100 {
+            context.setLineDash(
+                phase: 0,
+                lengths: [perimeter * CGFloat(clamped) / 100, perimeter]
+            )
+        }
+        context.strokePath()
+        context.restoreGState()
     }
 
-    private func drawResetCount(_ count: Int?) {
+    private func roundedRectPath(in rect: NSRect, radius: CGFloat) -> CGPath {
+        let r = min(radius, min(rect.width, rect.height) / 2)
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.maxX - r, y: rect.maxY))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
+            radius: r,
+            startAngle: .pi / 2,
+            endAngle: 0,
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + r))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.minY + r),
+            radius: r,
+            startAngle: 0,
+            endAngle: -.pi / 2,
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.minY + r),
+            radius: r,
+            startAngle: -.pi / 2,
+            endAngle: -.pi,
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.maxY - r),
+            radius: r,
+            startAngle: .pi,
+            endAngle: .pi / 2,
+            clockwise: true
+        )
+        path.closeSubpath()
+        return path
+    }
+
+    private func drawResetPips(_ count: Int?) {
         guard let count else { return }
         let normalizedCount = max(0, count)
-        let text = normalizedCount > 99 ? "99+" : String(normalizedCount)
-        let fontSize: CGFloat = text.count == 1 ? 7.5 : (text.count == 2 ? 5.5 : 4.0)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .semibold),
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.9),
-        ]
-        let textSize = text.size(withAttributes: attributes)
-        text.draw(
-            at: NSPoint(
-                x: bounds.midX - textSize.width / 2,
-                y: bounds.midY - textSize.height / 2 + 0.5
-            ),
-            withAttributes: attributes
-        )
+        let visibleCount = min(6, normalizedCount)
+        let positions: [(CGFloat, CGFloat)]
+        switch visibleCount {
+        case 1:
+            positions = [(0, 0)]
+        case 2:
+            positions = [(-1, 1), (1, -1)]
+        case 3:
+            positions = [(-1, 1), (0, 0), (1, -1)]
+        case 4:
+            positions = [(-1, 1), (1, 1), (-1, -1), (1, -1)]
+        case 5:
+            positions = [(-1, 1), (1, 1), (0, 0), (-1, -1), (1, -1)]
+        case 6:
+            positions = [(-1, 1), (-1, 0), (-1, -1), (1, 1), (1, 0), (1, -1)]
+        default:
+            positions = []
+        }
+        let spacing = NSSize(width: 2.15, height: 1.75)
+        let pipRadius: CGFloat = 0.78
+        NSColor.labelColor.withAlphaComponent(0.9).setFill()
+        for position in positions {
+            let center = NSPoint(
+                x: bounds.midX + position.0 * spacing.width,
+                y: bounds.midY + position.1 * spacing.height
+            )
+            NSBezierPath(
+                ovalIn: NSRect(
+                    x: center.x - pipRadius,
+                    y: center.y - pipRadius,
+                    width: pipRadius * 2,
+                    height: pipRadius * 2
+                )
+            ).fill()
+        }
     }
 }
 
@@ -898,7 +961,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.31"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.32"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [

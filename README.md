@@ -10,9 +10,9 @@ A tiny macOS menu bar quota indicator for Codex.
 
 Codex Battery turns Codex usage limits into a compact menu bar signal:
 
-- Outer ring: weekly quota remaining
-- Inner ring: 5-hour quota remaining
-- Center number: available full-reset credits
+- Outer rounded ring: weekly quota remaining
+- Inner rounded ring: 5-hour quota remaining
+- Center dice pips: available full-reset credits, visually capped at six while the tooltip keeps the exact count
 - Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
