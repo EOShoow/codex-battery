@@ -36,7 +36,7 @@ final class QuotaIconView: NSView {
         context.setLineWidth(width)
         context.setLineCap(.round)
         context.setLineJoin(.round)
-        context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.18).cgColor)
+        context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.08).cgColor)
         context.strokePath()
 
         let clamped = max(0, min(100, remaining))
@@ -54,7 +54,7 @@ final class QuotaIconView: NSView {
             let minimumGapLength: CGFloat = 1.35
             let activeLength = min(proportionalActiveLength, perimeter - minimumGapLength)
             context.setLineDash(
-                phase: activeLength,
+                phase: 0,
                 lengths: [activeLength, perimeter - activeLength]
             )
         }
