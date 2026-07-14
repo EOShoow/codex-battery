@@ -245,6 +245,235 @@ final class QuotaIconView: NSView {
     }
 }
 
+struct WeeklyTrendPoint: Decodable {
+    let timestamp: Double
+    let used: Double
+}
+
+private struct WeeklyTrendCalculation {
+    let rate: Double?
+    let confidence: String
+    let spanHours: Double
+    let points: [WeeklyTrendPoint]
+}
+
+private enum WeeklyTrendCalculator {
+    static func merge(
+        points: [WeeklyTrendPoint],
+        sourceReset: Int?,
+        targetReset: Int?,
+        timestamp: String?,
+        currentUsed: Double?
+    ) -> WeeklyTrendCalculation {
+        guard let targetReset,
+              let currentUsed,
+              let now = parseTimestamp(timestamp) else {
+            return WeeklyTrendCalculation(rate: nil, confidence: "low", spanHours: 0, points: [])
+        }
+
+        let resetAt = TimeInterval(targetReset)
+        let nowAt = now.timeIntervalSince1970
+        let weekSeconds: TimeInterval = 7 * 24 * 3600
+        let startAt = resetAt - weekSeconds
+        guard nowAt >= startAt, nowAt <= resetAt + 300 else {
+            return WeeklyTrendCalculation(rate: nil, confidence: "low", spanHours: 0, points: [])
+        }
+
+        let sameWindow = sourceReset.map { abs($0 - targetReset) <= 300 } ?? false
+        let clampedUsed = max(0, min(100, currentUsed))
+        let sourcePoints = sameWindow ? points : []
+        var buckets: [Int: Double] = [:]
+        for point in sourcePoints where point.timestamp >= startAt - 300 && point.timestamp <= nowAt + 300 {
+            let bucket = Int(point.timestamp / 300) * 300
+            let used = max(0, min(clampedUsed, point.used))
+            buckets[bucket] = max(used, buckets[bucket] ?? 0)
+        }
+
+        var observed: [WeeklyTrendPoint] = []
+        var highest = 0.0
+        for (bucket, used) in buckets.sorted(by: { $0.key < $1.key }) {
+            highest = max(highest, used)
+            observed.append(WeeklyTrendPoint(timestamp: Double(bucket), used: highest))
+        }
+        if observed.last?.timestamp != nowAt || observed.last?.used != clampedUsed {
+            observed.append(WeeklyTrendPoint(timestamp: nowAt, used: clampedUsed))
+        }
+
+        let elapsedHours = max((nowAt - startAt) / 3600, 1 / 60)
+        let baseRate = clampedUsed / elapsedHours
+        var rate = baseRate
+        let target = nowAt - 24 * 3600
+        let chartSource = [WeeklyTrendPoint(timestamp: startAt, used: 0)] + observed
+        let anchor = chartSource.last(where: { $0.timestamp <= target }) ?? chartSource.first
+        if let anchor {
+            let coverageHours = (nowAt - anchor.timestamp) / 3600
+            if coverageHours >= 6 {
+                var recentRate = max(0, (clampedUsed - anchor.used) / coverageHours)
+                let recentCap = max(baseRate * 2.5, baseRate + 0.25)
+                recentRate = min(recentRate, recentCap)
+                let recentWeight = 0.35 * min(1, coverageHours / 24)
+                rate = baseRate * (1 - recentWeight) + recentRate * recentWeight
+            }
+        }
+
+        let realObserved = observed.filter { $0.timestamp > startAt + 300 }
+        let spanHours: Double
+        if let first = realObserved.first, let last = realObserved.last, realObserved.count >= 2 {
+            spanHours = max(0, (last.timestamp - first.timestamp) / 3600)
+        } else {
+            spanHours = 0
+        }
+        let changes = zip(realObserved, realObserved.dropFirst()).filter { $0.used < $1.used }.count
+        let confidence: String
+        if spanHours >= 48, changes >= 5 {
+            confidence = "high"
+        } else if spanHours >= 24, changes >= 3 {
+            confidence = "medium"
+        } else {
+            confidence = "low"
+        }
+
+        var displayPoints = [WeeklyTrendPoint(timestamp: startAt, used: 0)]
+        for point in observed where point.used != displayPoints.last?.used {
+            displayPoints.append(point)
+        }
+        if displayPoints.last?.timestamp != nowAt || displayPoints.last?.used != clampedUsed {
+            displayPoints.append(WeeklyTrendPoint(timestamp: nowAt, used: clampedUsed))
+        }
+        return WeeklyTrendCalculation(
+            rate: rate,
+            confidence: confidence,
+            spanHours: spanHours,
+            points: displayPoints
+        )
+    }
+
+    private static func parseTimestamp(_ timestamp: String?) -> Date? {
+        guard var timestamp, !timestamp.isEmpty else { return nil }
+        if timestamp.hasSuffix("Z") {
+            timestamp = String(timestamp.dropLast()) + "+00:00"
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallback = ISO8601DateFormatter()
+        fallback.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: timestamp) ?? fallback.date(from: timestamp)
+    }
+}
+
+private enum WeeklyForecastClock {
+    static func isExpired(resetSeconds: Int, wallClockNow: Date = Date()) -> Bool {
+        Date(timeIntervalSince1970: TimeInterval(resetSeconds)) <= wallClockNow
+    }
+
+    static func referenceNow(snapshot: Date?, wallClockNow: Date = Date()) -> Date {
+        max(snapshot ?? wallClockNow, wallClockNow)
+    }
+}
+
+private struct WeeklyForecastPresentation {
+    let summary: String
+    let confidence: String
+    let actualPoints: [CGPoint]
+    let currentPoint: CGPoint?
+    let forecastPoint: CGPoint?
+    let tone: NSColor
+    let tooltip: String
+}
+
+final class WeeklyForecastView: NSView {
+    var title = "Forecast"
+    var summary = "-"
+    var confidence = ""
+    var startLabel = "Start"
+    var resetLabel = "Reset"
+    var actualPoints: [CGPoint] = []
+    var currentPoint: CGPoint?
+    var forecastPoint: CGPoint?
+    var tone = NSColor.secondaryLabelColor
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.menuFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let summaryAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.menuFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: tone,
+        ]
+        let smallAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+
+        NSAttributedString(string: title, attributes: titleAttributes)
+            .draw(in: NSRect(x: 16, y: 43, width: 90, height: 18))
+        NSAttributedString(string: summary, attributes: summaryAttributes)
+            .draw(in: NSRect(x: 112, y: 43, width: 245, height: 18))
+        let rightAligned = NSMutableParagraphStyle()
+        rightAligned.alignment = .right
+        var rightSmallAttributes = smallAttributes
+        rightSmallAttributes[.paragraphStyle] = rightAligned
+        NSAttributedString(string: confidence, attributes: rightSmallAttributes)
+            .draw(in: NSRect(x: 360, y: 45, width: 84, height: 15))
+
+        let graph = NSRect(x: 112, y: 15, width: 332, height: 24)
+        let background = NSBezierPath(roundedRect: graph, xRadius: 4, yRadius: 4)
+        NSColor.labelColor.withAlphaComponent(0.045).setFill()
+        background.fill()
+
+        let ideal = NSBezierPath()
+        ideal.move(to: map(CGPoint(x: 0, y: 0), into: graph))
+        ideal.line(to: map(CGPoint(x: 1, y: 1), into: graph))
+        ideal.lineWidth = 1
+        ideal.setLineDash([3, 3], count: 2, phase: 0)
+        NSColor.secondaryLabelColor.withAlphaComponent(0.45).setStroke()
+        ideal.stroke()
+
+        if actualPoints.count >= 2 {
+            let actual = NSBezierPath()
+            actual.move(to: map(actualPoints[0], into: graph))
+            for point in actualPoints.dropFirst() {
+                actual.line(to: map(point, into: graph))
+            }
+            actual.lineWidth = 2
+            actual.lineCapStyle = .round
+            actual.lineJoinStyle = .round
+            NSColor.labelColor.withAlphaComponent(0.88).setStroke()
+            actual.stroke()
+        }
+
+        if let currentPoint, let forecastPoint {
+            let forecast = NSBezierPath()
+            forecast.move(to: map(currentPoint, into: graph))
+            forecast.line(to: map(forecastPoint, into: graph))
+            forecast.lineWidth = 2
+            forecast.lineCapStyle = .round
+            forecast.setLineDash([4, 3], count: 2, phase: 0)
+            tone.setStroke()
+            forecast.stroke()
+        }
+
+        if let currentPoint {
+            let center = map(currentPoint, into: graph)
+            tone.setFill()
+            NSBezierPath(ovalIn: NSRect(x: center.x - 2.5, y: center.y - 2.5, width: 5, height: 5)).fill()
+        }
+
+        NSAttributedString(string: startLabel, attributes: smallAttributes)
+            .draw(in: NSRect(x: 112, y: 1, width: 80, height: 13))
+        let resetText = NSAttributedString(string: resetLabel, attributes: rightSmallAttributes)
+        resetText.draw(in: NSRect(x: 392, y: 1, width: 52, height: 13))
+    }
+
+    private func map(_ point: CGPoint, into rect: NSRect) -> NSPoint {
+        let x = rect.minX + max(0, min(1, point.x)) * rect.width
+        let y = rect.maxY - max(0, min(1, point.y)) * rect.height
+        return NSPoint(x: x, y: y)
+    }
+}
+
 struct QuotaInfo: Decodable {
     let ok: Bool
     let error: String?
@@ -265,19 +494,24 @@ struct QuotaInfo: Decodable {
     let totalTokens: Int?
     let todayTokens: Int?
     let todayVs3DayAvg: Double?
-    let weeklyBurnPctPerHour: Double?
-    let weeklyEtaHours: Double?
-    let weeklyBudgetRatio: Double?
-    let weeklyDaysEarly: Double?
-    let weeklyActiveBudgetRatio: Double?
-    let risk: String?
+    let weeklyTrendRatePctPerHour: Double?
+    let weeklyTrendConfidence: String?
+    let weeklyTrendSpanHours: Double?
+    let weeklyTrendPoints: [WeeklyTrendPoint]?
     let topThread: String?
     let topThreadTokens: Int?
     let activeThreads: Int?
     let activeWindowSeconds: Int?
 
     func replacingQuota(with quota: QuotaInfo, activeThreads: Int, activeWindowSeconds: Int) -> QuotaInfo {
-        QuotaInfo(
+        let mergedTrend = WeeklyTrendCalculator.merge(
+            points: weeklyTrendPoints ?? [],
+            sourceReset: secondaryReset,
+            targetReset: quota.secondaryReset,
+            timestamp: quota.timestamp,
+            currentUsed: quota.secondaryUsed
+        )
+        return QuotaInfo(
             ok: quota.ok,
             error: quota.error,
             timestamp: quota.timestamp,
@@ -297,12 +531,10 @@ struct QuotaInfo: Decodable {
             totalTokens: totalTokens,
             todayTokens: todayTokens,
             todayVs3DayAvg: todayVs3DayAvg,
-            weeklyBurnPctPerHour: weeklyBurnPctPerHour,
-            weeklyEtaHours: weeklyEtaHours,
-            weeklyBudgetRatio: weeklyBudgetRatio,
-            weeklyDaysEarly: weeklyDaysEarly,
-            weeklyActiveBudgetRatio: weeklyActiveBudgetRatio,
-            risk: risk,
+            weeklyTrendRatePctPerHour: mergedTrend.rate,
+            weeklyTrendConfidence: mergedTrend.confidence,
+            weeklyTrendSpanHours: mergedTrend.spanHours,
+            weeklyTrendPoints: mergedTrend.points,
             topThread: topThread,
             topThreadTokens: topThreadTokens,
             activeThreads: activeThreads,
@@ -541,6 +773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             iconView.needsDisplay = true
             fiveHourItem.isHidden = false
             weekItem.isHidden = true
+            forecastItem.isHidden = false
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
             setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
             setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
@@ -565,11 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let secondaryReset = formatReset(info.secondaryReset)
         let today = info.todayTokens.map { Self.formatCompact($0) } ?? "-"
         let ratio = info.todayVs3DayAvg.map { String(format: "%.1fx", $0) } ?? "-"
-        let weeklyPrediction = formatWeeklyPrediction(
-            budgetRatio: info.weeklyBudgetRatio,
-            activeBudgetRatio: info.weeklyActiveBudgetRatio,
-            daysEarly: info.weeklyDaysEarly
-        )
+        let weeklyForecast = makeWeeklyForecastPresentation(info)
         let todayFlag = formatTodayFlag(info.todayVs3DayAvg)
         let topThread = info.topThread ?? "-"
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
@@ -585,7 +814,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         detailLines.append(useChinese ? "可用重置: \(resetCredits)" : "Resets available: \(resetCredits)")
         detailLines.append(useChinese ? "今日: \(today)  \(ratio)\(todayFlag)" : "Today: \(today)  \(ratio)\(todayFlag)")
-        detailLines.append(useChinese ? "周预测: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")" : "Weekly forecast: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")")
+        detailLines.append(useChinese ? "周预测: \(weeklyForecast.summary)  \(weeklyForecast.confidence)" : "Weekly forecast: \(weeklyForecast.summary)  \(weeklyForecast.confidence)")
         detailLines.append("Top: \(topThread)  \(topThreadTokens)")
         detailLines.append(useChinese ? "后台活动: \(activity)" : "Activity: \(activity)")
         detailLines.append(useChinese ? "数据于: \(dataAt)" : "Data at: \(dataAt)")
@@ -593,6 +822,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         fiveHourItem.isHidden = fiveHour == nil
         weekItem.isHidden = week == nil
+        forecastItem.isHidden = week == nil
         if let fiveHour {
             setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
         }
@@ -600,7 +830,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
         }
         setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today, detail: "\(ratio)\(todayFlag)")
-        setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: weeklyPrediction.status, detail: weeklyPrediction.detail)
+        setWeeklyForecastItem(forecastItem, presentation: weeklyForecast)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
         setInfoItem(updatedItem, label: t("数据于", "Data at"), value: dataAt)
@@ -610,6 +840,150 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func remainingPercentage(used: Double?, reset: Int?) -> Int? {
         guard let used else { return nil }
         return isResetExpired(reset) ? 100 : max(0, 100 - Int(round(used)))
+    }
+
+    private func makeWeeklyForecastPresentation(_ info: QuotaInfo) -> WeeklyForecastPresentation {
+        guard let used = info.secondaryUsed,
+              let resetSeconds = info.secondaryReset else {
+            return WeeklyForecastPresentation(
+                summary: t("暂无周额度", "No weekly quota"),
+                confidence: "",
+                actualPoints: [],
+                currentPoint: nil,
+                forecastPoint: nil,
+                tone: .secondaryLabelColor,
+                tooltip: t("当前没有可预测的周额度窗口", "No weekly quota window is available for forecasting")
+            )
+        }
+
+        let resetAt = Date(timeIntervalSince1970: TimeInterval(resetSeconds))
+        let wallClockNow = Date()
+        if WeeklyForecastClock.isExpired(resetSeconds: resetSeconds, wallClockNow: wallClockNow) {
+            let summary = t("等待新周数据", "Waiting for new week")
+            return WeeklyForecastPresentation(
+                summary: summary,
+                confidence: t("低置信", "low"),
+                actualPoints: [],
+                currentPoint: nil,
+                forecastPoint: nil,
+                tone: .secondaryLabelColor,
+                tooltip: t("额度窗口已重置，等待 Codex 返回新周快照。", "The quota window reset; waiting for a new weekly snapshot from Codex.")
+            )
+        }
+        let now = WeeklyForecastClock.referenceNow(
+            snapshot: Self.parseQuotaTimestamp(info.timestamp),
+            wallClockNow: wallClockNow
+        )
+        let weekSeconds: TimeInterval = 7 * 24 * 3600
+        let startAt = resetAt.addingTimeInterval(-weekSeconds)
+        let elapsed = max(0, min(weekSeconds, now.timeIntervalSince(startAt)))
+        let nowProgress = CGFloat(elapsed / weekSeconds)
+        let currentPoint = CGPoint(x: nowProgress, y: CGFloat(max(0, min(100, used)) / 100))
+
+        var actualPoints = (info.weeklyTrendPoints ?? []).compactMap { point -> CGPoint? in
+            let timestamp = Date(timeIntervalSince1970: point.timestamp)
+            let progress = timestamp.timeIntervalSince(startAt) / weekSeconds
+            guard progress >= 0, progress <= 1.01 else { return nil }
+            return CGPoint(
+                x: CGFloat(max(0, min(1, progress))),
+                y: CGFloat(max(0, min(used, point.used)) / 100)
+            )
+        }
+        if actualPoints.last != currentPoint {
+            actualPoints.append(currentPoint)
+        }
+        actualPoints.sort { $0.x < $1.x }
+
+        let confidenceName: String
+        switch info.weeklyTrendConfidence {
+        case "high": confidenceName = t("高置信", "high")
+        case "medium": confidenceName = t("中置信", "medium")
+        default: confidenceName = t("低置信", "low")
+        }
+        let spanHours = max(0, info.weeklyTrendSpanHours ?? 0)
+        let spanText: String
+        if spanHours >= 24 {
+            spanText = String(format: "%.1fd", spanHours / 24)
+        } else {
+            spanText = String(format: "%.0fh", spanHours)
+        }
+        let confidence = spanHours > 0 ? "\(confidenceName) · \(spanText)" : confidenceName
+
+        guard let rate = info.weeklyTrendRatePctPerHour,
+              rate.isFinite,
+              rate > 0,
+              now < resetAt else {
+            let summary = t("样本积累中", "Building forecast")
+            return WeeklyForecastPresentation(
+                summary: summary,
+                confidence: confidence,
+                actualPoints: actualPoints,
+                currentPoint: currentPoint,
+                forecastPoint: nil,
+                tone: .secondaryLabelColor,
+                tooltip: t("\(summary)。实线为实际消耗，灰线为均匀预算线。", "\(summary). Solid is actual usage; gray is the even-budget line.")
+            )
+        }
+
+        let remainingHours = max(0, resetAt.timeIntervalSince(now) / 3600)
+        let projectedUsed = used + rate * remainingHours
+        let summary: String
+        let forecastPoint: CGPoint
+        let tone: NSColor
+        if projectedUsed >= 100 {
+            let hoursToExhaust = max(0, (100 - used) / rate)
+            let earlyHours = max(0, remainingHours - hoursToExhaust)
+            let earlyText: String
+            if earlyHours >= 24 {
+                earlyText = useChinese
+                    ? String(format: "%.1f 天", earlyHours / 24)
+                    : String(format: "%.1f days", earlyHours / 24)
+            } else {
+                earlyText = useChinese
+                    ? String(format: "%.0f 小时", earlyHours)
+                    : String(format: "%.0f hours", earlyHours)
+            }
+            summary = t("预计提前 \(earlyText) 用完", "Runs out \(earlyText) early")
+            let exhaustProgress = min(1, nowProgress + CGFloat(hoursToExhaust / (7 * 24)))
+            forecastPoint = CGPoint(x: exhaustProgress, y: 1)
+            tone = .systemRed
+        } else {
+            let projectedRemaining = max(0, 100 - projectedUsed)
+            summary = t(
+                "预计重置时剩 \(Int(round(projectedRemaining)))%",
+                "\(Int(round(projectedRemaining)))% left at reset"
+            )
+            forecastPoint = CGPoint(x: 1, y: CGFloat(projectedUsed / 100))
+            tone = projectedRemaining < 15 ? .systemOrange : .systemGreen
+        }
+        let tooltip = t(
+            "\(summary)，\(confidence)。实线为实际消耗，彩色虚线为预测，灰线为均匀预算。",
+            "\(summary), \(confidence). Solid is actual usage, colored dash is forecast, gray is the even-budget line."
+        )
+        return WeeklyForecastPresentation(
+            summary: summary,
+            confidence: confidence,
+            actualPoints: actualPoints,
+            currentPoint: currentPoint,
+            forecastPoint: forecastPoint,
+            tone: tone,
+            tooltip: tooltip
+        )
+    }
+
+    private func setWeeklyForecastItem(_ item: NSMenuItem, presentation: WeeklyForecastPresentation) {
+        let view = WeeklyForecastView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 68))
+        view.title = t("周预测", "Forecast")
+        view.summary = presentation.summary
+        view.confidence = presentation.confidence
+        view.startLabel = t("周起点", "start")
+        view.resetLabel = t("重置", "reset")
+        view.actualPoints = presentation.actualPoints
+        view.currentPoint = presentation.currentPoint
+        view.forecastPoint = presentation.forecastPoint
+        view.tone = presentation.tone
+        view.toolTip = presentation.tooltip
+        item.view = view
     }
 
     private func setInfoItem(_ item: NSMenuItem, label: String, value: String, detail: String? = nil) {
@@ -869,12 +1243,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 totalTokens: nil,
                 todayTokens: nil,
                 todayVs3DayAvg: nil,
-                weeklyBurnPctPerHour: nil,
-                weeklyEtaHours: nil,
-                weeklyBudgetRatio: nil,
-                weeklyDaysEarly: nil,
-                weeklyActiveBudgetRatio: nil,
-                risk: nil,
+                weeklyTrendRatePctPerHour: nil,
+                weeklyTrendConfidence: nil,
+                weeklyTrendSpanHours: nil,
+                weeklyTrendPoints: nil,
                 topThread: nil,
                 topThreadTokens: nil,
                 activeThreads: nil,
@@ -949,34 +1321,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return String(format: "%.0fK", double / 1_000)
         }
         return "\(value)"
-    }
-
-    private static func formatEta(_ hours: Double) -> String {
-        if !hours.isFinite || hours <= 0 {
-            return "-"
-        }
-        if hours < 24 {
-            return String(format: "%.0fh", hours)
-        }
-        return String(format: "%.1fd", hours / 24)
-    }
-
-    private func formatWeeklyPrediction(budgetRatio: Double?, activeBudgetRatio: Double?, daysEarly: Double?) -> (status: String, detail: String?) {
-        let preferredRatio = activeBudgetRatio ?? budgetRatio
-        guard let ratioValue = preferredRatio, ratioValue.isFinite else {
-            return ("-", nil)
-        }
-        let ratio = useChinese ? String(format: "活跃节奏 %.1fx", ratioValue) : String(format: "active pace %.1fx", ratioValue)
-        if let daysEarly, daysEarly.isFinite, daysEarly > 0 {
-            return (useChinese ? "会提前耗尽" : "runs out early", ratio)
-        }
-        if ratioValue <= 0.7 {
-            return (useChinese ? "很安全" : "safe", ratio)
-        }
-        if ratioValue <= 1.05 {
-            return (useChinese ? "可撑到重置" : "lasts to reset", ratio)
-        }
-        return (useChinese ? "偏快" : "fast", ratio)
     }
 
     private func formatTodayFlag(_ ratio: Double?) -> String {
@@ -1224,6 +1568,97 @@ def prefer_monotonic_quota_values(latest, snapshots):
         latest[used_key] = best.get(used_key)
     return latest
 
+def build_weekly_trend(points, reset_at, now_at, current_used):
+    empty = {
+        "rate": None,
+        "confidence": "low",
+        "spanHours": 0.0,
+        "points": [],
+    }
+    try:
+        reset_at = float(reset_at)
+        now_at = float(now_at)
+        current_used = max(0.0, min(100.0, float(current_used)))
+    except (TypeError, ValueError):
+        return empty
+
+    week_seconds = 7 * 24 * 3600
+    start_at = reset_at - week_seconds
+    if now_at < start_at or now_at > reset_at + 300:
+        return empty
+
+    buckets = {}
+    for timestamp, used, point_reset in points:
+        try:
+            timestamp = timestamp.timestamp() if hasattr(timestamp, "timestamp") else float(timestamp)
+            used = max(0.0, min(current_used, float(used)))
+            point_reset = float(point_reset)
+        except (TypeError, ValueError):
+            continue
+        # Codex has emitted the same reset boundary one second apart. Treat a
+        # five-minute difference as the same window, while excluding old weeks.
+        if abs(point_reset - reset_at) > 300:
+            continue
+        if timestamp < start_at - 300 or timestamp > now_at + 300:
+            continue
+        bucket = int(timestamp // 300) * 300
+        buckets[bucket] = max(used, buckets.get(bucket, 0.0))
+
+    observed = []
+    highest = 0.0
+    for timestamp, used in sorted(buckets.items()):
+        highest = max(highest, used)
+        observed.append((float(timestamp), highest))
+
+    elapsed_hours = max((now_at - start_at) / 3600, 1 / 60)
+    base_rate = current_used / elapsed_hours
+    rate = base_rate
+
+    chart_source = [(start_at, 0.0)] + observed
+    target = now_at - 24 * 3600
+    earlier = [item for item in chart_source if item[0] <= target]
+    anchor = earlier[-1] if earlier else (chart_source[0] if chart_source else None)
+    if anchor is not None:
+        coverage_hours = (now_at - anchor[0]) / 3600
+        if coverage_hours >= 6:
+            recent_rate = max(0.0, (current_used - anchor[1]) / coverage_hours)
+            recent_cap = max(base_rate * 2.5, base_rate + 0.25)
+            recent_rate = min(recent_rate, recent_cap)
+            recent_weight = 0.35 * min(1.0, coverage_hours / 24)
+            rate = base_rate * (1 - recent_weight) + recent_rate * recent_weight
+
+    span_hours = 0.0
+    if len(observed) >= 2:
+        span_hours = max(0.0, (observed[-1][0] - observed[0][0]) / 3600)
+    changes = sum(a[1] < b[1] for a, b in zip(observed, observed[1:]))
+    if span_hours >= 48 and changes >= 5:
+        confidence = "high"
+    elif span_hours >= 24 and changes >= 3:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    display_points = [(start_at, 0.0)]
+    for item in observed:
+        if item[1] != display_points[-1][1]:
+            display_points.append(item)
+    if not display_points or display_points[-1][0] != now_at or display_points[-1][1] != current_used:
+        display_points.append((now_at, current_used))
+    if len(display_points) > 48:
+        last = len(display_points) - 1
+        indices = sorted(set(round(index * last / 47) for index in range(48)))
+        display_points = [display_points[index] for index in indices]
+
+    return {
+        "rate": rate,
+        "confidence": confidence,
+        "spanHours": span_hours,
+        "points": [
+            {"timestamp": float(timestamp), "used": float(used)}
+            for timestamp, used in display_points
+        ],
+    }
+
 def read_app_server_quota(timeout_seconds=8):
     codex_binary = next((path for path in codex_binary_candidates if path.is_file()), None)
     if codex_binary is None:
@@ -1251,7 +1686,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.38"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.39"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -1336,12 +1771,10 @@ def empty_stats_out(snapshot):
         "totalTokens": None,
         "todayTokens": 0,
         "todayVs3DayAvg": None,
-        "weeklyBurnPctPerHour": None,
-        "weeklyEtaHours": None,
-        "weeklyBudgetRatio": None,
-        "weeklyDaysEarly": None,
-        "weeklyActiveBudgetRatio": None,
-        "risk": "OK",
+        "weeklyTrendRatePctPerHour": None,
+        "weeklyTrendConfidence": "low",
+        "weeklyTrendSpanHours": 0.0,
+        "weeklyTrendPoints": [],
         "topThread": None,
         "topThreadTokens": None,
         "activeThreads": 0,
@@ -1474,7 +1907,6 @@ top_by_thread = defaultdict(Counter)
 weekly_points = []
 rate_snapshots = []
 active_thread_ids = set()
-active_bins_by_day = defaultdict(set)
 thread_names = load_thread_names(session_index_path)
 
 for thread_id, rollout_path, title, model, effort in rows:
@@ -1504,8 +1936,6 @@ for thread_id, rollout_path, title, model, effort in rows:
                 continue
             if ts >= now - timedelta(seconds=ACTIVE_WINDOW_SECONDS):
                 active_thread_ids.add(thread_id)
-            active_bin = ts.replace(minute=(ts.minute // 5) * 5, second=0, microsecond=0)
-            active_bins_by_day[ts.date()].add(active_bin)
             rate_limits = payload.get("rate_limits")
             info = payload.get("info") or {}
             total = info.get("total_token_usage") or {}
@@ -1546,8 +1976,9 @@ for thread_id, rollout_path, title, model, effort in rows:
                 # (for example codex_bengalfox) whose reset time is not the
                 # main "Remaining quota" window shown in the Codex UI. Keep
                 # weekly trend math anchored to the official aggregate window.
-                if used is not None and rate_limits.get("limit_id") == "codex":
-                    weekly_points.append((ts, float(used)))
+                week_reset = week.get("reset") if week else None
+                if used is not None and week_reset is not None and rate_limits.get("limit_id") == "codex":
+                    weekly_points.append((ts, float(used), float(week_reset)))
                 if latest is None or ts > latest["ts"]:
                     latest = {
                         "ts": ts,
@@ -1642,65 +2073,9 @@ today_threads.sort(key=lambda item: item[1], reverse=True)
 top_thread, top_thread_tokens = today_threads[0] if today_threads else (None, None)
 
 weekly_points.sort(key=lambda item: item[0])
-cutoff = now - timedelta(hours=3)
-recent_weekly = [(ts, used) for ts, used in weekly_points if ts >= cutoff]
-weekly_burn = None
-weekly_eta = None
-weekly_budget_ratio = None
-weekly_days_early = None
-weekly_active_budget_ratio = None
-if len(recent_weekly) >= 2:
-    first_ts, first_used = recent_weekly[0]
-    last_ts, last_used = recent_weekly[-1]
-    hours = max((last_ts - first_ts).total_seconds() / 3600, 1 / 60)
-    delta = max(0.0, last_used - first_used)
-    weekly_burn = delta / hours
-    latest_remaining = max(0.0, 100.0 - float(latest.get("secondaryUsed") or 0))
-    if weekly_burn > 0:
-        weekly_eta = latest_remaining / weekly_burn
-
 reset_at = latest.get("secondaryReset")
 used_week = latest.get("secondaryUsed")
-if reset_at and used_week is not None:
-    try:
-        used_week = float(used_week)
-        reset_at = float(reset_at)
-        week_seconds = 7 * 24 * 3600
-        start_at = reset_at - week_seconds
-        now_at = now.timestamp()
-        elapsed = max(0.0, min(week_seconds, now_at - start_at))
-        expected_used = elapsed / week_seconds * 100.0 if elapsed > 0 else 0.0
-        if expected_used >= 0.5:
-            weekly_budget_ratio = used_week / expected_used
-        if used_week > 0 and elapsed > 0:
-            exhaust_at = start_at + 100.0 * elapsed / used_week
-            if exhaust_at < reset_at:
-                weekly_days_early = (reset_at - exhaust_at) / 86400
-
-        week_start = datetime.fromtimestamp(start_at, tz)
-        active_bins_this_week = set()
-        for bins in active_bins_by_day.values():
-            for active_bin in bins:
-                if week_start <= active_bin <= now:
-                    active_bins_this_week.add(active_bin)
-        active_hours_elapsed = len(active_bins_this_week) * 5 / 60
-        # Do not assume an always-on 24h/day workload. Budget only actual
-        # observed active buckets, compared against an 8h/day workday budget.
-        active_hours_per_day = 8.0
-        expected_active_used = active_hours_elapsed / (active_hours_per_day * 7) * 100.0
-        if expected_active_used >= 0.5:
-            weekly_active_budget_ratio = used_week / expected_active_used
-    except Exception:
-        pass
-
-remaining_week = max(0.0, 100.0 - float(latest.get("secondaryUsed") or 0))
-risk = "OK"
-if remaining_week < 15 or (weekly_days_early is not None and weekly_days_early >= 1):
-    risk = "CRITICAL"
-elif (weekly_days_early is not None and weekly_days_early > 0) or (today_vs_3 is not None and today_vs_3 >= 5):
-    risk = "HOT"
-elif (weekly_budget_ratio is not None and weekly_budget_ratio >= 1.2) or (today_vs_3 is not None and today_vs_3 >= 2):
-    risk = "FAST"
+weekly_trend = build_weekly_trend(weekly_points, reset_at, now.timestamp(), used_week)
 
 out = dict(latest)
 out.pop("ts", None)
@@ -1709,12 +2084,10 @@ out.update({
     "todayTokens": today_tokens,
     "todayVs3DayAvg": today_vs_3,
     "serviceTier": read_service_tier(),
-    "weeklyBurnPctPerHour": weekly_burn,
-    "weeklyEtaHours": weekly_eta,
-    "weeklyBudgetRatio": weekly_budget_ratio,
-    "weeklyDaysEarly": weekly_days_early,
-    "weeklyActiveBudgetRatio": weekly_active_budget_ratio,
-    "risk": risk,
+    "weeklyTrendRatePctPerHour": weekly_trend.get("rate"),
+    "weeklyTrendConfidence": weekly_trend.get("confidence"),
+    "weeklyTrendSpanHours": weekly_trend.get("spanHours"),
+    "weeklyTrendPoints": weekly_trend.get("points"),
     "topThread": top_thread,
     "topThreadTokens": top_thread_tokens,
     "activeThreads": len(active_thread_ids),

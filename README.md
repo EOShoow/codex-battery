@@ -89,13 +89,13 @@ If you are cautious, inspect the source first and install from source with `./in
 
 ## Reading The Menu
 
-Example in English:
+Example in English (the forecast row is graphical in the app):
 
 ```text
 5h left     82%    18:44
 1w left     96%    May 12 08:43
 Today burn  76.2M  0.3x
-Forecast    safe  active pace 0.6x
+Forecast    12% left at reset  medium confidence
 Top         Codex Battery  21.5M
 Activity    1 thread active in 2m
 Data at     18:43:17
@@ -107,17 +107,19 @@ Example in Chinese:
 5小时剩余  82%    18:44
 1周剩余    96%    5月12日 08:43
 今日消耗    76.2M  0.3x
-周预测      很安全  活跃节奏 0.6x
+周预测      预计重置时剩 12%  中置信
 Top         Codex Battery  21.5M
 后台活动    近2分钟 1个线程仍在消耗
 数据于      18:43:17
 ```
 
-`active pace 1.0x` means your weekly usage is exactly on the active-hour budget line. Codex Battery counts recent 5-minute active buckets and compares them against an 8h/day workday budget, so sleep and other idle hours do not make the forecast look worse.
+The graphical forecast row uses three lines:
 
-- Below `1.0x`: safer than budget
-- Around `1.0x`: on track to reach reset exactly
-- Above `1.0x`: ahead of budget and may run out early
+- Gray diagonal: the even budget needed to use 100% exactly at reset
+- Solid line: actual weekly usage recorded in local Codex snapshots
+- Colored dashed line: projected usage; green means comfortable, orange means close to empty, and red means projected to run out before reset
+
+The estimate locks samples to the current weekly reset window, collapses duplicate snapshots into 5-minute buckets, and blends the stable since-reset average with roughly the most recent 24-hour pace; when samples are sparse, that recent observation range expands. It also shows low, medium, or high confidence from the observed time span and number of real usage changes. This removes the old fixed `8h/day` assumption and makes short bursts less likely to dominate the result.
 
 `Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails before any live quota has been cached, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp. After a live quota snapshot has been cached, a failed refresh keeps that snapshot and marks the row as `Stale` instead of replacing it with older rollout-log quota.
 
@@ -161,7 +163,7 @@ If Codex is temporarily writing, checkpointing, or migrating `~/.codex/state_5.s
 
 ## Accuracy
 
-This is an unofficial local dashboard. Current 5-hour and weekly quota are read from the same local Codex app-server account-rate-limit path used by the native UI. Today/top/forecast statistics still come from local rollout logs, so those secondary statistics can lag if Codex has not flushed the latest usage event yet.
+This is an unofficial local dashboard. Current 5-hour and weekly quota are read from the same local Codex app-server account-rate-limit path used by the native UI. Today and top-thread statistics come from local rollout logs. The forecast combines rollout history with the latest live weekly usage when available, so its history can still lag if Codex has not flushed recent events. Forecast confidence communicates the amount of usable history; it is an estimate of the current pace, not a quota guarantee.
 
 Treat it as a fast dashboard, not an accounting source of truth.
 
