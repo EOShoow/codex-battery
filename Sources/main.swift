@@ -7,8 +7,8 @@ fileprivate enum IconStyle: String {
 }
 
 final class QuotaIconView: NSView {
-    var fiveHour = 0
-    var week = 0
+    var fiveHour: Int?
+    var week: Int?
     var availableResetCredits: Int?
     var serviceTier = "standard"
     fileprivate var style: IconStyle = .resetCredits
@@ -39,8 +39,17 @@ final class QuotaIconView: NSView {
 
     private func drawResetCreditsIcon() {
         let outerRect = bounds.insetBy(dx: 2.5, dy: 2.5)
-        drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 1.5)
-        drawRoundedRing(in: outerRect.insetBy(dx: 2.3, dy: 2.3), radius: 2.7, remaining: fiveHour, width: 1.5)
+        if week == nil && fiveHour == nil {
+            drawRoundedRing(in: outerRect, radius: 5.0, remaining: 0, width: 1.5)
+        }
+        if let week {
+            drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 1.5)
+            if let fiveHour {
+                drawRoundedRing(in: outerRect.insetBy(dx: 2.3, dy: 2.3), radius: 2.7, remaining: fiveHour, width: 1.5)
+            }
+        } else if let fiveHour {
+            drawRoundedRing(in: outerRect, radius: 5.0, remaining: fiveHour, width: 1.5)
+        }
         drawResetPips(availableResetCredits)
     }
 
@@ -48,8 +57,17 @@ final class QuotaIconView: NSView {
         let size = min(bounds.width, bounds.height)
         let origin = NSPoint(x: bounds.midX - size / 2, y: bounds.midY - size / 2)
         let square = NSRect(origin: origin, size: NSSize(width: size, height: size)).insetBy(dx: 2.5, dy: 2.5)
-        drawServiceTierRing(in: square, remaining: week, width: 2.7)
-        drawServiceTierRing(in: square.insetBy(dx: 3.5, dy: 3.5), remaining: fiveHour, width: 2.7)
+        if week == nil && fiveHour == nil {
+            drawServiceTierRing(in: square, remaining: 0, width: 2.7)
+        }
+        if let week {
+            drawServiceTierRing(in: square, remaining: week, width: 2.7)
+            if let fiveHour {
+                drawServiceTierRing(in: square.insetBy(dx: 3.5, dy: 3.5), remaining: fiveHour, width: 2.7)
+            }
+        } else if let fiveHour {
+            drawServiceTierRing(in: square, remaining: fiveHour, width: 2.7)
+        }
         drawServiceTierCenterMark(in: square.insetBy(dx: 7.0, dy: 7.0))
     }
 
@@ -515,14 +533,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func render(_ info: QuotaInfo) {
         guard info.ok else {
             let message = info.error ?? "No quota data"
-            iconView.fiveHour = 0
-            iconView.week = 0
+            iconView.fiveHour = nil
+            iconView.week = nil
             iconView.availableResetCredits = nil
             iconView.serviceTier = "standard"
             iconView.style = iconStyle
             iconView.needsDisplay = true
+            fiveHourItem.isHidden = false
+            weekItem.isHidden = true
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
-            setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
             setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
             setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
             setInfoItem(topItem, label: "Top", value: "-")
@@ -532,10 +551,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        let primaryExpired = isResetExpired(info.primaryReset)
-        let secondaryExpired = isResetExpired(info.secondaryReset)
-        let fiveHour = primaryExpired ? 100 : max(0, 100 - Int(round(info.primaryUsed ?? 0)))
-        let week = secondaryExpired ? 100 : max(0, 100 - Int(round(info.secondaryUsed ?? 0)))
+        let fiveHour = remainingPercentage(used: info.primaryUsed, reset: info.primaryReset)
+        let week = remainingPercentage(used: info.secondaryUsed, reset: info.secondaryReset)
         iconView.fiveHour = fiveHour
         iconView.week = week
         let availableResetCredits = info.availableResetCredits.map { max(0, $0) }
@@ -559,33 +576,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let activity = formatActivity(info)
         let dataAt = formatDataTimestamp(info.timestamp)
         let resetCredits = availableResetCredits.map(String.init) ?? "-"
-        let detail = useChinese ? """
-        5小时剩余: \(fiveHour)%  \(primaryReset)
-        1周剩余: \(week)%  \(secondaryReset)
-        可用重置: \(resetCredits)
-        今日: \(today)  \(ratio)\(todayFlag)
-        周预测: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
-        Top: \(topThread)  \(topThreadTokens)
-        后台活动: \(activity)
-        数据于: \(dataAt)
-        """ : """
-        5h left: \(fiveHour)%  \(primaryReset)
-        1w left: \(week)%  \(secondaryReset)
-        Resets available: \(resetCredits)
-        Today: \(today)  \(ratio)\(todayFlag)
-        Weekly forecast: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
-        Top: \(topThread)  \(topThreadTokens)
-        Activity: \(activity)
-        Data at: \(dataAt)
-        """
-        setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
-        setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
+        var detailLines: [String] = []
+        if let fiveHour {
+            detailLines.append(useChinese ? "5小时剩余: \(fiveHour)%  \(primaryReset)" : "5h left: \(fiveHour)%  \(primaryReset)")
+        }
+        if let week {
+            detailLines.append(useChinese ? "1周剩余: \(week)%  \(secondaryReset)" : "1w left: \(week)%  \(secondaryReset)")
+        }
+        detailLines.append(useChinese ? "可用重置: \(resetCredits)" : "Resets available: \(resetCredits)")
+        detailLines.append(useChinese ? "今日: \(today)  \(ratio)\(todayFlag)" : "Today: \(today)  \(ratio)\(todayFlag)")
+        detailLines.append(useChinese ? "周预测: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")" : "Weekly forecast: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")")
+        detailLines.append("Top: \(topThread)  \(topThreadTokens)")
+        detailLines.append(useChinese ? "后台活动: \(activity)" : "Activity: \(activity)")
+        detailLines.append(useChinese ? "数据于: \(dataAt)" : "Data at: \(dataAt)")
+        let detail = detailLines.joined(separator: "\n")
+
+        fiveHourItem.isHidden = fiveHour == nil
+        weekItem.isHidden = week == nil
+        if let fiveHour {
+            setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
+        }
+        if let week {
+            setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
+        }
         setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today, detail: "\(ratio)\(todayFlag)")
         setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: weeklyPrediction.status, detail: weeklyPrediction.detail)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
         setInfoItem(updatedItem, label: t("数据于", "Data at"), value: dataAt)
         iconView.tooltipText = detail
+    }
+
+    private func remainingPercentage(used: Double?, reset: Int?) -> Int? {
+        guard let used else { return nil }
+        return isResetExpired(reset) ? 100 : max(0, 100 - Int(round(used)))
     }
 
     private func setInfoItem(_ item: NSMenuItem, label: String, value: String, detail: String? = nil) {
@@ -1125,6 +1149,81 @@ def read_recent_json(path, max_lines=1200):
             break
     return reversed(lines)
 
+def normalize_quota_windows(primary, secondary):
+    def first_value(window, names):
+        for name in names:
+            value = window.get(name)
+            if value is not None:
+                return value
+        return None
+
+    windows = []
+    for position, raw_window in (("primary", primary), ("secondary", secondary)):
+        if not raw_window:
+            continue
+        duration_names = ("windowDurationMins", "window_minutes")
+        duration_present = any(name in raw_window for name in duration_names)
+        duration = first_value(raw_window, duration_names)
+        try:
+            duration = float(duration) if duration is not None else None
+        except (TypeError, ValueError):
+            duration = None
+        windows.append((position, {
+            "used": first_value(raw_window, ("usedPercent", "used_percent")),
+            "reset": first_value(raw_window, ("resetsAt", "resets_at")),
+            "duration": duration,
+            "duration_present": duration_present,
+        }))
+
+    five_hour = None
+    week = None
+    unclassified = []
+    for position, window in windows:
+        duration = window.get("duration")
+        if duration is not None and 4 * 60 <= duration <= 6 * 60:
+            if five_hour is None:
+                five_hour = window
+            continue
+        if duration is not None and 6 * 24 * 60 <= duration <= 8 * 24 * 60:
+            if week is None:
+                week = window
+            continue
+        if duration is None and not window.get("duration_present"):
+            unclassified.append((position, window))
+
+    # Preserve the legacy primary=5h / secondary=1w contract when older
+    # payloads do not carry duration metadata.
+    for position, window in unclassified:
+        if position == "primary" and five_hour is None:
+            five_hour = window
+        elif position == "secondary" and week is None:
+            week = window
+        elif five_hour is None:
+            five_hour = window
+        elif week is None:
+            week = window
+
+    return five_hour, week
+
+def prefer_monotonic_quota_values(latest, snapshots):
+    for used_key, reset_key in (
+        ("primaryUsed", "primaryReset"),
+        ("secondaryUsed", "secondaryReset"),
+    ):
+        if latest.get(used_key) is None:
+            continue
+        reset_at = latest.get(reset_key)
+        candidates = [
+            snap for snap in snapshots
+            if snap.get(used_key) is not None
+            and snap.get(reset_key) == reset_at
+        ]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda snap: (float(snap.get(used_key) or 0), snap["ts"]))
+        latest[used_key] = best.get(used_key)
+    return latest
+
 def read_app_server_quota(timeout_seconds=8):
     codex_binary = next((path for path in codex_binary_candidates if path.is_file()), None)
     if codex_binary is None:
@@ -1152,7 +1251,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.37"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.38"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -1191,8 +1290,10 @@ def read_app_server_quota(timeout_seconds=8):
                 snapshot = by_id.get("codex") or result.get("rateLimits")
                 if not snapshot:
                     return None
-                primary = snapshot.get("primary") or {}
-                secondary = snapshot.get("secondary") or {}
+                five_hour, week = normalize_quota_windows(
+                    snapshot.get("primary"),
+                    snapshot.get("secondary"),
+                )
                 reset_credits = result.get("rateLimitResetCredits") or {}
                 return {
                     "timestamp": datetime.now(tz).isoformat(),
@@ -1201,10 +1302,10 @@ def read_app_server_quota(timeout_seconds=8):
                     "limitName": snapshot.get("limitName"),
                     "quotaSource": "app_server",
                     "availableResetCredits": reset_credits.get("availableCount"),
-                    "primaryUsed": primary.get("usedPercent"),
-                    "secondaryUsed": secondary.get("usedPercent"),
-                    "primaryReset": primary.get("resetsAt"),
-                    "secondaryReset": secondary.get("resetsAt"),
+                    "primaryUsed": five_hour.get("used") if five_hour else None,
+                    "secondaryUsed": week.get("used") if week else None,
+                    "primaryReset": five_hour.get("reset") if five_hour else None,
+                    "secondaryReset": week.get("reset") if week else None,
                 }
     except Exception:
         return None
@@ -1420,8 +1521,10 @@ for thread_id, rollout_path, title, model, effort in rows:
                 continue
             seen.add(state)
             if rate_limits:
-                primary = rate_limits.get("primary") or {}
-                secondary = rate_limits.get("secondary") or {}
+                five_hour, week = normalize_quota_windows(
+                    rate_limits.get("primary"),
+                    rate_limits.get("secondary"),
+                )
                 rate_snapshots.append({
                     "ts": ts,
                     "timestamp": obj.get("timestamp"),
@@ -1429,16 +1532,16 @@ for thread_id, rollout_path, title, model, effort in rows:
                     "limitId": rate_limits.get("limit_id"),
                     "limitName": rate_limits.get("limit_name"),
                     "quotaSource": "rollout",
-                    "primaryUsed": primary.get("used_percent"),
-                    "secondaryUsed": secondary.get("used_percent"),
-                    "primaryReset": primary.get("resets_at"),
-                    "secondaryReset": secondary.get("resets_at"),
+                    "primaryUsed": five_hour.get("used") if five_hour else None,
+                    "secondaryUsed": week.get("used") if week else None,
+                    "primaryReset": five_hour.get("reset") if five_hour else None,
+                    "secondaryReset": week.get("reset") if week else None,
                     "title": display_title,
                     "model": model,
                     "effort": effort,
                     "totalTokens": total.get("total_tokens")
                 })
-                used = secondary.get("used_percent")
+                used = week.get("used") if week else None
                 # Codex may emit additional model-specific quota windows
                 # (for example codex_bengalfox) whose reset time is not the
                 # main "Remaining quota" window shown in the Codex UI. Keep
@@ -1453,10 +1556,10 @@ for thread_id, rollout_path, title, model, effort in rows:
                         "limitId": rate_limits.get("limit_id"),
                         "limitName": rate_limits.get("limit_name"),
                         "quotaSource": "rollout",
-                        "primaryUsed": primary.get("used_percent"),
-                        "secondaryUsed": secondary.get("used_percent"),
-                        "primaryReset": primary.get("resets_at"),
-                        "secondaryReset": secondary.get("resets_at"),
+                        "primaryUsed": five_hour.get("used") if five_hour else None,
+                        "secondaryUsed": week.get("used") if week else None,
+                        "primaryReset": five_hour.get("reset") if five_hour else None,
+                        "secondaryReset": week.get("reset") if week else None,
                         "title": display_title,
                         "model": model,
                         "effort": effort,
@@ -1499,45 +1602,13 @@ if official_snapshots:
 # should be monotonic, so prefer the highest recent value over a lower snapshot
 # that merely has a newer timestamp.
 fresh_cutoff = now - timedelta(minutes=15)
-now_epoch = now.timestamp()
 same_limit = [
     snap for snap in rate_snapshots
     if snap["ts"] >= fresh_cutoff
     and snap.get("planType") == latest.get("planType")
     and snap.get("limitId") == latest.get("limitId")
 ]
-primary_candidates = [
-    snap for snap in same_limit
-    if snap.get("primaryReset") is not None
-    and float(snap.get("primaryReset") or 0) > now_epoch
-    and snap.get("primaryUsed") is not None
-]
-secondary_candidates = [
-    snap for snap in same_limit
-    if snap.get("secondaryReset") is not None
-    and float(snap.get("secondaryReset") or 0) > now_epoch
-    and snap.get("secondaryUsed") is not None
-]
-if not primary_candidates:
-    primary_candidates = [
-        snap for snap in same_limit
-        if snap.get("primaryReset") == latest.get("primaryReset")
-        and snap.get("primaryUsed") is not None
-    ]
-if not secondary_candidates:
-    secondary_candidates = [
-        snap for snap in same_limit
-        if snap.get("secondaryReset") == latest.get("secondaryReset")
-        and snap.get("secondaryUsed") is not None
-    ]
-if primary_candidates:
-    best_primary = max(primary_candidates, key=lambda snap: (float(snap.get("primaryReset") or 0), float(snap.get("primaryUsed") or 0), snap["ts"]))
-    latest["primaryUsed"] = best_primary.get("primaryUsed")
-    latest["primaryReset"] = best_primary.get("primaryReset")
-if secondary_candidates:
-    best_secondary = max(secondary_candidates, key=lambda snap: (float(snap.get("secondaryReset") or 0), float(snap.get("secondaryUsed") or 0), snap["ts"]))
-    latest["secondaryUsed"] = best_secondary.get("secondaryUsed")
-    latest["secondaryReset"] = best_secondary.get("secondaryReset")
+prefer_monotonic_quota_values(latest, same_limit)
 
 if app_server_snapshot:
     latest.update({
@@ -1671,8 +1742,10 @@ for thread_id, rollout_path, title, model, effort in []:
             info = payload.get("info") or {}
             if not rate_limits:
                 continue
-            primary = rate_limits.get("primary") or {}
-            secondary = rate_limits.get("secondary") or {}
+            five_hour, week = normalize_quota_windows(
+                rate_limits.get("primary"),
+                rate_limits.get("secondary"),
+            )
             total = info.get("total_token_usage") or {}
             print(json.dumps({
                 "ok": True,
@@ -1680,10 +1753,10 @@ for thread_id, rollout_path, title, model, effort in []:
                 "planType": rate_limits.get("plan_type"),
                 "limitId": rate_limits.get("limit_id"),
                 "limitName": rate_limits.get("limit_name"),
-                "primaryUsed": primary.get("used_percent"),
-                "secondaryUsed": secondary.get("used_percent"),
-                "primaryReset": primary.get("resets_at"),
-                "secondaryReset": secondary.get("resets_at"),
+                "primaryUsed": five_hour.get("used") if five_hour else None,
+                "secondaryUsed": week.get("used") if week else None,
+                "primaryReset": five_hour.get("reset") if five_hour else None,
+                "secondaryReset": week.get("reset") if week else None,
                 "title": title,
                 "model": model,
                 "effort": effort,

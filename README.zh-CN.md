@@ -18,8 +18,7 @@ Codex Battery 就是给“额度不足焦虑症患者”准备的小工具：它
 
 Codex Battery 会把 Codex 额度变成一个紧凑的菜单栏信号：
 
-- 外层圆角环：1 周额度剩余
-- 内层圆角环：5 小时额度剩余
+- 额度环会跟随 Codex 实际返回的窗口自动变化：同时有周额度和 5 小时额度时显示双环，仅返回周额度时只显示外环
 - 中心骰子点阵：当前可用的完整额度重置次数；图标最多显示六点，Tooltip 保留真实次数
 - 图标样式：可从菜单的“图标样式”切换“骰子双环（重置次数）”或“圆环闪电（速度档位）”，选择只保存在本机
 - 菜单详情：重置时间、今日 token 消耗、周预算预测、当前消耗最高的 Codex 对话、近期后台活动、数据生成时间
@@ -120,6 +119,8 @@ Top         Codex Battery  21.5M
 
 如果 5 小时或 1 周窗口的重置时间已经过去，但 Codex 还没有写入新的 usage 事件，Codex Battery 会把这个窗口视为已重置，显示 `100%` 和 `已重置`。
 
+Codex 可能阶段性只返回周额度窗口。此时 Codex Battery 会隐藏不可用的 5 小时行和内环；后续重新返回双窗口时，5 小时行和第二个环会自动恢复。
+
 如果某一行因为太长出现省略号，鼠标悬停可以看到完整内容。
 
 ## 刷新机制
@@ -171,6 +172,7 @@ Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格
 - 已在 2026-05-05 的 Codex Desktop `26.429.30905` / app-server 协议上验证
 - 已在 2026-05-22 的 Codex Desktop `26.519.31651` 上验证
 - 已在 2026-07-10 的 ChatGPT for macOS 内置 Codex 上验证
+- 已在 2026-07-14 的 Codex for macOS 单周额度返回结构上验证
 - 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度
 - 同时兼容 `/Applications/ChatGPT.app` 内置 app-server 和旧版 `/Applications/Codex.app`
 - 读取 `~/.codex/state_5.sqlite`

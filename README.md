@@ -10,8 +10,7 @@ A tiny macOS menu bar quota indicator for Codex.
 
 Codex Battery turns Codex usage limits into a compact menu bar signal:
 
-- Outer rounded ring: weekly quota remaining
-- Inner rounded ring: 5-hour quota remaining
+- Quota rings adapt to the windows returned by Codex: two rings show weekly + 5-hour remaining, while a weekly-only response shows one outer ring
 - Center dice pips: available full-reset credits, visually capped at six while the tooltip keeps the exact count
 - Icon style: choose **Rounded dice (reset credits)** or **Round bolt (service tier)** from the `Icon Style` menu; the choice is remembered locally
 - Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
@@ -124,6 +123,8 @@ Top         Codex Battery  21.5M
 
 If a 5-hour or weekly reset window has already passed but Codex has not written a fresh usage event yet, Codex Battery treats that window as reset and shows `100%` plus `reset`.
 
+Codex may temporarily return only the weekly window. In that case Codex Battery hides the unavailable 5-hour row and inner ring. If Codex returns both windows again later, the 5-hour row and second ring reappear automatically.
+
 If a row is truncated, hover it to see the full value in a tooltip.
 
 ## Refresh Behavior
@@ -175,6 +176,7 @@ Current known baseline:
 - Verified with Codex Desktop `26.429.30905` / app-server protocol as of 2026-05-05
 - Verified with Codex Desktop `26.519.31651` as of 2026-05-22
 - Verified with Codex in ChatGPT for macOS as of 2026-07-10
+- Verified with the weekly-only quota response shape in Codex for macOS as of 2026-07-14
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
 - Supports the bundled app-server in both `/Applications/ChatGPT.app` and the legacy `/Applications/Codex.app`
 - Reads `~/.codex/state_5.sqlite`
