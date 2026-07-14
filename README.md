@@ -10,9 +10,10 @@ A tiny macOS menu bar quota indicator for Codex.
 
 Codex Battery turns Codex usage limits into a compact menu bar signal:
 
-- Outer ring: weekly quota remaining
-- Inner ring: 5-hour quota remaining
-- Center bolt: Codex speed tier is set to fast
+- Outer rounded ring: weekly quota remaining
+- Inner rounded ring: 5-hour quota remaining
+- Center dice pips: available full-reset credits, visually capped at six while the tooltip keeps the exact count
+- Icon style: choose **Rounded dice (reset credits)** or **Round bolt (service tier)** from the `Icon Style` menu; the choice is remembered locally
 - Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
@@ -135,9 +136,11 @@ Codex Battery refreshes:
 - Every 5 minutes when recent Codex activity is detected
 - Every 5 minutes after a failed refresh
 
-Opening the menu does not refresh by default, because quota refresh starts the local Codex app-server and can cost power. If you want the old behavior, enable `Sync on open: On` in the menu.
+Opening the menu keeps the quota display aligned with the official panel: if the cached account-quota snapshot is more than 60 seconds old, Codex Battery performs a quota-only refresh. Repeated menu opens are debounced for 60 seconds and do not postpone the existing background refresh schedule. Enable `Full sync on open: On` only if you also want today/top/forecast statistics recalculated when opening the menu, at most once per minute.
 
-To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 60 seconds. That probe only reads local state, the Codex speed-tier setting, and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active or the local data source timestamp advance, it triggers a full refresh immediately.
+To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 5 minutes. That probe only reads local state and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active, it triggers an account-quota refresh.
+
+Automatic 5-minute refreshes only read the official account quota. The heavier local scan used for today/top/forecast statistics runs at startup, on manual refresh, and at most once per hour in the background. This keeps the quota rings current without repeatedly parsing recent thread history.
 
 You can tune the automatic intervals:
 
@@ -145,10 +148,11 @@ You can tune the automatic intervals:
 defaults write local.codex.battery.menu activeRefreshMinutes -int 5
 defaults write local.codex.battery.menu idleRefreshMinutes -int 30
 defaults write local.codex.battery.menu failureRetryMinutes -int 5
-defaults write local.codex.battery.menu activityProbeSeconds -int 60
+defaults write local.codex.battery.menu activityProbeSeconds -int 300
+defaults write local.codex.battery.menu detailRefreshMinutes -int 60
 ```
 
-To keep power use low, it asks the local Codex app-server for the current account quota, then checks only the most recent active threads and reads the tail of each rollout log for today/top/forecast statistics.
+To keep power use low, regular automatic refreshes only ask the local Codex app-server for the current account quota. The less frequent detail refresh checks recent active threads and reads rollout tails for today/top/forecast statistics.
 
 When background Codex work is still running, the menu shows an `Activity` line such as `2 thread(s) active in 2m`. That is a reminder that quota may keep moving even if you are not actively typing in the current thread.
 
@@ -162,7 +166,7 @@ Treat it as a fast dashboard, not an accounting source of truth.
 
 ## Compatibility
 
-Codex Battery depends on Codex Desktop's local app-server protocol and local state format, especially `account/rateLimits/read`, `~/.codex/state_5.sqlite`, `~/.codex/config.toml`, and the rollout log entries referenced by that database.
+Codex Battery depends on Codex Desktop's local app-server protocol and local state format, especially `account/rateLimits/read`, `~/.codex/state_5.sqlite`, and the rollout log entries referenced by that database.
 
 This is not an official public Codex API. If a future Codex Desktop update changes the app-server protocol, local database schema, log path layout, or `token_count` event format, Codex Battery may stop showing data until it is updated.
 
@@ -170,9 +174,11 @@ Current known baseline:
 
 - Verified with Codex Desktop `26.429.30905` / app-server protocol as of 2026-05-05
 - Verified with Codex Desktop `26.519.31651` as of 2026-05-22
+- Verified with Codex in ChatGPT for macOS as of 2026-07-10
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
+- Supports the bundled app-server in both `/Applications/ChatGPT.app` and the legacy `/Applications/Codex.app`
 - Reads `~/.codex/state_5.sqlite`
-- Reads the speed tier from `~/.codex/config.toml` (`service_tier`, with legacy `default-service-tier` fallback), then falls back to `~/.codex/.codex-global-state.json`
+- Reads the available full-reset count from `rateLimitResetCredits.availableCount`; the center stays blank when that live field is unavailable
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
 If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
@@ -190,7 +196,6 @@ Codex Battery does not upload your rollout logs, thread contents, or statistics.
 It also reads locally:
 
 - `~/.codex/state_5.sqlite`
-- `~/.codex/config.toml` for the local Codex speed-tier setting
 - recent rollout log paths referenced by that database
 
 Thread titles are displayed locally so you can see which conversation is consuming tokens.

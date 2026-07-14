@@ -18,9 +18,10 @@ Codex Battery 就是给“额度不足焦虑症患者”准备的小工具：它
 
 Codex Battery 会把 Codex 额度变成一个紧凑的菜单栏信号：
 
-- 外圈：1 周额度剩余
-- 内圈：5 小时额度剩余
-- 中心闪电：Codex 速度档位为快速
+- 外层圆角环：1 周额度剩余
+- 内层圆角环：5 小时额度剩余
+- 中心骰子点阵：当前可用的完整额度重置次数；图标最多显示六点，Tooltip 保留真实次数
+- 图标样式：可从菜单的“图标样式”切换“骰子双环（重置次数）”或“圆环闪电（速度档位）”，选择只保存在本机
 - 菜单详情：重置时间、今日 token 消耗、周预算预测、当前消耗最高的 Codex 对话、近期后台活动、数据生成时间
 
 它只读取本机 `~/.codex` 下的状态和日志，不上传数据，不需要网页登录，也不打扰你的工作流。
@@ -131,9 +132,11 @@ Codex Battery 会在这些时机刷新：
 - 检测到近期 Codex 活动时每 5 分钟刷新
 - 刷新失败后每 5 分钟重试
 
-打开菜单默认不会刷新，因为额度刷新会启动本机 Codex app-server，有一定功耗。如果你想恢复旧行为，可以在菜单里打开 `打开菜单时刷新：开`。
+打开菜单时会智能校准官方额度：如果账号额度快照已经超过 60 秒，Codex Battery 会执行一次只读额度刷新；连续打开菜单会按 60 秒防抖，也不会推迟原有后台刷新计划。只有确实需要打开菜单时同步重算今日消耗、Top 和周预测时，才打开 `打开时完整刷新：开`；完整刷新同样限制为每分钟最多一次。
 
-为了避免你从空闲重新开始工作后还卡在 30 分钟等待里，Codex Battery 会额外每 60 秒跑一次轻量活动探针。这个探针只读本机状态、Codex 速度档位和最近 rollout 日志尾部，不启动 Codex app-server；如果发现从空闲变成活跃，或本地数据源时间戳变新，就立即触发一次完整刷新。
+为了避免你从空闲重新开始工作后还卡在 30 分钟等待里，Codex Battery 会额外每 5 分钟跑一次轻量活动探针。这个探针只读本机状态和最近 rollout 日志尾部，不启动 Codex app-server；如果发现从空闲变成活跃，就触发一次账号额度刷新。
+
+活跃期间每 5 分钟的自动刷新只读取官方账号额度。用于计算今日消耗、Top 和周预测的本地重型扫描只在启动、手动刷新以及后台每小时最多一次时运行，让额度圆环保持新鲜，同时避免反复解析近期线程历史。
 
 自动刷新间隔也可以自己填：
 
@@ -141,10 +144,11 @@ Codex Battery 会在这些时机刷新：
 defaults write local.codex.battery.menu activeRefreshMinutes -int 5
 defaults write local.codex.battery.menu idleRefreshMinutes -int 30
 defaults write local.codex.battery.menu failureRetryMinutes -int 5
-defaults write local.codex.battery.menu activityProbeSeconds -int 60
+defaults write local.codex.battery.menu activityProbeSeconds -int 300
+defaults write local.codex.battery.menu detailRefreshMinutes -int 60
 ```
 
-为了降低功耗，它会先向本机 Codex app-server 获取当前账号额度，再只检查最近活跃的线程，并读取每个 rollout 日志的尾部来计算今日、Top 和预测统计。
+为了降低功耗，常规自动刷新只向本机 Codex app-server 获取当前账号额度；频率更低的详情刷新才会检查最近活跃线程并读取 rollout 尾部，计算今日、Top 和预测统计。
 
 如果后台 Codex 任务仍在运行，菜单会显示 `后台活动` 行，例如 `近2分钟 2 个线程仍在消耗`。这用于提醒你：即使当前对话没有输入，额度也可能因为后台自动化继续变化。
 
@@ -158,7 +162,7 @@ defaults write local.codex.battery.menu activityProbeSeconds -int 60
 
 ## 兼容性
 
-Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格式，主要是 `account/rateLimits/read`、`~/.codex/state_5.sqlite`、`~/.codex/config.toml`，以及这个数据库引用的 rollout 日志。
+Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格式，主要是 `account/rateLimits/read`、`~/.codex/state_5.sqlite`，以及这个数据库引用的 rollout 日志。
 
 这不是 Codex 官方公开 API。如果未来 Codex Desktop 升级后修改了 app-server 协议、本地数据库结构、日志路径布局，或者 `token_count` 事件格式，Codex Battery 可能会暂时读不到数据，需要更新后才能恢复。
 
@@ -166,9 +170,11 @@ Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格
 
 - 已在 2026-05-05 的 Codex Desktop `26.429.30905` / app-server 协议上验证
 - 已在 2026-05-22 的 Codex Desktop `26.519.31651` 上验证
+- 已在 2026-07-10 的 ChatGPT for macOS 内置 Codex 上验证
 - 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度
+- 同时兼容 `/Applications/ChatGPT.app` 内置 app-server 和旧版 `/Applications/Codex.app`
 - 读取 `~/.codex/state_5.sqlite`
-- 优先从 `~/.codex/config.toml` 读取 speed 档位（新字段 `service_tier`，兼容旧字段 `default-service-tier`），再回退到 `~/.codex/.codex-global-state.json`
+- 从 `rateLimitResetCredits.availableCount` 读取可用完整重置次数；实时字段不可用时中心留空
 - 读取包含 `token_count.rate_limits` 的近期 rollout 日志
 
 如果 Codex 升级后失效，请开 issue，并附上 Codex 版本、macOS 版本、菜单里显示的错误文本。不要直接粘贴私密 rollout 日志；如果必须提供，请先自行检查和脱敏。
@@ -186,7 +192,6 @@ Codex Battery 不上传你的 rollout 日志、对话内容或本地统计。核
 它还会在本机读取：
 
 - `~/.codex/state_5.sqlite`
-- `~/.codex/config.toml` 中的本机 Codex speed 档位设置
 - 该数据库引用的近期 rollout 日志
 
 对话标题只在本机菜单里显示，用于判断哪个对话最耗 token。

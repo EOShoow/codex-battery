@@ -1,10 +1,17 @@
 import AppKit
 import Foundation
 
+fileprivate enum IconStyle: String {
+    case resetCredits
+    case serviceTier
+}
+
 final class QuotaIconView: NSView {
     var fiveHour = 0
     var week = 0
+    var availableResetCredits: Int?
     var serviceTier = "standard"
+    fileprivate var style: IconStyle = .resetCredits
     var tooltipText = "Codex quota" {
         didSet { toolTip = tooltipText }
     }
@@ -22,18 +29,31 @@ final class QuotaIconView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         NSGraphicsContext.current?.shouldAntialias = true
-        let size = min(bounds.width, bounds.height)
-        let origin = NSPoint(
-            x: bounds.midX - size / 2,
-            y: bounds.midY - size / 2
-        )
-        let square = NSRect(origin: origin, size: NSSize(width: size, height: size)).insetBy(dx: 2.5, dy: 2.5)
-        drawRing(in: square, remaining: week, width: 2.7)
-        drawRing(in: square.insetBy(dx: 3.5, dy: 3.5), remaining: fiveHour, width: 2.7)
-        drawCenterMark(in: square.insetBy(dx: 7.0, dy: 7.0), serviceTier: serviceTier)
+        switch style {
+        case .resetCredits:
+            drawResetCreditsIcon()
+        case .serviceTier:
+            drawServiceTierIcon()
+        }
     }
 
-    private func drawRing(in rect: NSRect, remaining: Int, width: CGFloat) {
+    private func drawResetCreditsIcon() {
+        let outerRect = bounds.insetBy(dx: 2.5, dy: 2.5)
+        drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 1.5)
+        drawRoundedRing(in: outerRect.insetBy(dx: 2.3, dy: 2.3), radius: 2.7, remaining: fiveHour, width: 1.5)
+        drawResetPips(availableResetCredits)
+    }
+
+    private func drawServiceTierIcon() {
+        let size = min(bounds.width, bounds.height)
+        let origin = NSPoint(x: bounds.midX - size / 2, y: bounds.midY - size / 2)
+        let square = NSRect(origin: origin, size: NSSize(width: size, height: size)).insetBy(dx: 2.5, dy: 2.5)
+        drawServiceTierRing(in: square, remaining: week, width: 2.7)
+        drawServiceTierRing(in: square.insetBy(dx: 3.5, dy: 3.5), remaining: fiveHour, width: 2.7)
+        drawServiceTierCenterMark(in: square.insetBy(dx: 7.0, dy: 7.0))
+    }
+
+    private func drawServiceTierRing(in rect: NSRect, remaining: Int, width: CGFloat) {
         let base = NSBezierPath(ovalIn: rect)
         base.lineWidth = width
         NSColor.labelColor.withAlphaComponent(0.18).setStroke()
@@ -56,19 +76,8 @@ final class QuotaIconView: NSView {
         arc.stroke()
     }
 
-    private func drawCenterMark(in rect: NSRect, serviceTier: String) {
-        if Self.isStandardServiceTier(serviceTier) {
-            return
-        }
-        drawBolt(in: rect)
-    }
-
-    private static func isStandardServiceTier(_ serviceTier: String) -> Bool {
-        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized.isEmpty || normalized == "standard" || normalized == "default" || normalized == "none" || normalized == "null"
-    }
-
-    private func drawBolt(in rect: NSRect) {
+    private func drawServiceTierCenterMark(in rect: NSRect) {
+        guard !Self.isStandardServiceTier(serviceTier) else { return }
         let x = rect.midX
         let y = rect.midY
         let bolt = NSBezierPath()
@@ -82,6 +91,140 @@ final class QuotaIconView: NSView {
         NSColor.labelColor.withAlphaComponent(0.9).setFill()
         bolt.fill()
     }
+
+    private static func isStandardServiceTier(_ serviceTier: String) -> Bool {
+        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty || normalized == "standard" || normalized == "default" || normalized == "none" || normalized == "null"
+    }
+
+    private func drawRoundedRing(in rect: NSRect, radius: CGFloat, remaining: Int, width: CGFloat) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let path = roundedRectPath(in: rect, radius: radius)
+        context.saveGState()
+        context.addPath(path)
+        context.setLineWidth(width)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.08).cgColor)
+        context.strokePath()
+
+        let clamped = max(0, min(100, remaining))
+        guard clamped > 0 else {
+            context.restoreGState()
+            return
+        }
+
+        let effectiveRadius = min(radius, min(rect.width, rect.height) / 2)
+        let perimeter = 2 * (rect.width + rect.height - 4 * effectiveRadius) + 2 * .pi * effectiveRadius
+        context.addPath(path)
+        context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.86).cgColor)
+        if clamped < 100 {
+            let proportionalActiveLength = perimeter * CGFloat(clamped) / 100
+            let minimumGapLength: CGFloat = 1.35
+            let activeLength = min(proportionalActiveLength, perimeter - minimumGapLength)
+            context.setLineDash(
+                phase: 0,
+                lengths: [activeLength, perimeter - activeLength]
+            )
+        }
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private func roundedRectPath(in rect: NSRect, radius: CGFloat) -> CGPath {
+        let r = min(radius, min(rect.width, rect.height) / 2)
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.maxY))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
+            radius: r,
+            startAngle: .pi / 2,
+            endAngle: 0,
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + r))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.minY + r),
+            radius: r,
+            startAngle: 0,
+            endAngle: -.pi / 2,
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.minY + r),
+            radius: r,
+            startAngle: -.pi / 2,
+            endAngle: -.pi,
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.maxY - r),
+            radius: r,
+            startAngle: .pi,
+            endAngle: .pi / 2,
+            clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+
+    private func drawResetPips(_ count: Int?) {
+        guard let count else { return }
+        let normalizedCount = max(0, count)
+        let visibleCount = min(6, normalizedCount)
+        let positions: [(CGFloat, CGFloat)]
+        let spacing: NSSize
+        let pipRadius: CGFloat
+        switch visibleCount {
+        case 1:
+            positions = [(0, 0)]
+            spacing = .zero
+            pipRadius = 3.0
+        case 2:
+            positions = [(-1, 1), (1, -1)]
+            spacing = NSSize(width: 2.9, height: 2.4)
+            pipRadius = 2.2
+        case 3:
+            positions = [(-1, 1), (0, 0), (1, -1)]
+            spacing = NSSize(width: 3.35, height: 2.85)
+            pipRadius = 1.8
+        case 4:
+            positions = [(-1, 1), (1, 1), (-1, -1), (1, -1)]
+            spacing = NSSize(width: 2.9, height: 2.4)
+            pipRadius = 1.8
+        case 5:
+            positions = [(-1, 1), (1, 1), (0, 0), (-1, -1), (1, -1)]
+            spacing = NSSize(width: 2.9, height: 2.45)
+            pipRadius = 1.6
+        case 6:
+            positions = [(-1, 1), (-1, 0), (-1, -1), (1, 1), (1, 0), (1, -1)]
+            spacing = NSSize(width: 2.8, height: 3.1)
+            pipRadius = 1.5
+        default:
+            positions = []
+            spacing = .zero
+            pipRadius = 0
+        }
+        NSColor.labelColor.withAlphaComponent(0.9).setFill()
+        for position in positions {
+            let center = NSPoint(
+                x: bounds.midX + position.0 * spacing.width,
+                y: bounds.midY + position.1 * spacing.height
+            )
+            NSBezierPath(
+                ovalIn: NSRect(
+                    x: center.x - pipRadius,
+                    y: center.y - pipRadius,
+                    width: pipRadius * 2,
+                    height: pipRadius * 2
+                )
+            ).fill()
+        }
+    }
 }
 
 struct QuotaInfo: Decodable {
@@ -93,6 +236,7 @@ struct QuotaInfo: Decodable {
     let limitName: String?
     let quotaSource: String?
     let serviceTier: String?
+    let availableResetCredits: Int?
     let primaryUsed: Double?
     let secondaryUsed: Double?
     let primaryReset: Int?
@@ -113,6 +257,40 @@ struct QuotaInfo: Decodable {
     let topThreadTokens: Int?
     let activeThreads: Int?
     let activeWindowSeconds: Int?
+
+    func replacingQuota(with quota: QuotaInfo, activeThreads: Int, activeWindowSeconds: Int) -> QuotaInfo {
+        QuotaInfo(
+            ok: quota.ok,
+            error: quota.error,
+            timestamp: quota.timestamp,
+            planType: quota.planType,
+            limitId: quota.limitId,
+            limitName: quota.limitName,
+            quotaSource: quota.quotaSource,
+            serviceTier: serviceTier ?? quota.serviceTier,
+            availableResetCredits: quota.availableResetCredits,
+            primaryUsed: quota.primaryUsed,
+            secondaryUsed: quota.secondaryUsed,
+            primaryReset: quota.primaryReset,
+            secondaryReset: quota.secondaryReset,
+            title: title,
+            model: model,
+            effort: effort,
+            totalTokens: totalTokens,
+            todayTokens: todayTokens,
+            todayVs3DayAvg: todayVs3DayAvg,
+            weeklyBurnPctPerHour: weeklyBurnPctPerHour,
+            weeklyEtaHours: weeklyEtaHours,
+            weeklyBudgetRatio: weeklyBudgetRatio,
+            weeklyDaysEarly: weeklyDaysEarly,
+            weeklyActiveBudgetRatio: weeklyActiveBudgetRatio,
+            risk: risk,
+            topThread: topThread,
+            topThreadTokens: topThreadTokens,
+            activeThreads: activeThreads,
+            activeWindowSeconds: activeWindowSeconds
+        )
+    }
 }
 
 struct ActivityProbeInfo: Decodable {
@@ -131,10 +309,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let idleRefreshMinutesKey = "idleRefreshMinutes"
     private static let failureRetryMinutesKey = "failureRetryMinutes"
     private static let activityProbeSecondsKey = "activityProbeSeconds"
+    private static let detailRefreshMinutesKey = "detailRefreshMinutes"
+    private static let iconStyleKey = "iconStyle"
     private static let defaultActiveRefreshMinutes = 5
     private static let defaultIdleRefreshMinutes = 30
     private static let defaultFailureRetryMinutes = 5
-    private static let defaultActivityProbeSeconds = 60
+    private static let defaultActivityProbeSeconds = 300
+    private static let defaultDetailRefreshMinutes = 60
+    private static let menuQuotaFreshnessSeconds: TimeInterval = 60
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
@@ -147,6 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let updatedItem = NSMenuItem(title: "Data at -", action: nil, keyEquivalent: "")
     private let refreshItem = NSMenuItem(title: "Refresh", action: nil, keyEquivalent: "")
     private let syncOnOpenItem = NSMenuItem(title: "Sync on open Off", action: nil, keyEquivalent: "")
+    private let iconStyleItem = NSMenuItem(title: "Icon Style", action: nil, keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
     private var refreshTimer: Timer?
@@ -154,8 +337,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isRefreshing = false
     private var nextRefreshInterval: TimeInterval = 300
     private var lastGoodInfo: QuotaInfo?
-    private var lastKnownSourceUpdatedAt: String?
+    private var lastDetailAttemptAt: Date?
     private var lastProbeTriggeredRefreshAt: Date?
+    private var lastMenuRefreshAttemptAt: Date?
+    private var lastObservedActiveThreads = 0
+    private var lastObservedActiveWindowSeconds = 120
+    private var pendingScheduledRefresh = false
 
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
@@ -174,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureActionItem(refreshItem, title: t("刷新", "Refresh"), action: #selector(refreshNow))
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
         configureActionItem(quitItem, title: t("退出", "Quit"), action: #selector(quit))
+        configureIconStyleMenu()
         menu.delegate = self
         menu.addItem(fiveHourItem)
         menu.addItem(weekItem)
@@ -183,6 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(activityItem)
         menu.addItem(updatedItem)
         menu.addItem(.separator())
+        menu.addItem(iconStyleItem)
         menu.addItem(refreshItem)
         menu.addItem(syncOnOpenItem)
         menu.addItem(quitItem)
@@ -193,35 +382,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func refreshNow() {
-        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: t("刷新中...", "Refreshing..."))
+        performRefresh(includeDetails: true, reschedule: true)
+    }
+
+    @objc private func refreshScheduled() {
+        guard !isRefreshing else {
+            pendingScheduledRefresh = true
+            return
+        }
+        let detailInterval = Self.detailRefreshInterval()
+        let detailsAreDue = lastDetailAttemptAt.map { Date().timeIntervalSince($0) >= detailInterval } ?? true
+        performRefresh(includeDetails: detailsAreDue, reschedule: true)
+    }
+
+    private func performRefresh(includeDetails: Bool, reschedule: Bool) {
         guard !isRefreshing else { return }
         isRefreshing = true
-        setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: t("刷新中...", "Refreshing..."))
-        setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
-        setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
-        setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
-        setInfoItem(topItem, label: "Top", value: "-")
-        setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
+        if includeDetails {
+            lastDetailAttemptAt = Date()
+        }
+        setInfoItem(updatedItem, label: t("数据于", "Data at"), value: t("刷新中...", "Refreshing..."))
+        if includeDetails || lastGoodInfo == nil {
+            setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: t("刷新中...", "Refreshing..."))
+            setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
+            setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
+            setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
+            setInfoItem(topItem, label: "Top", value: "-")
+            setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
+        }
         DispatchQueue.global(qos: .utility).async {
-            let info = Self.readQuota()
+            let quotaInfo = Self.readQuotaOnly()
+            let detailInfo = includeDetails ? Self.readDetails() : nil
             DispatchQueue.main.async {
-                var scheduleAsFailure = false
-                if info.ok, self.shouldKeepCachedQuota(over: info), let cached = self.lastGoodInfo {
-                    self.render(cached)
-                    self.setInfoItem(
-                        self.updatedItem,
-                        label: self.t("旧数据", "Stale"),
-                        value: self.formatDataTimestamp(cached.timestamp)
+                let info: QuotaInfo
+                if let detailInfo, detailInfo.ok {
+                    self.lastObservedActiveThreads = detailInfo.activeThreads ?? 0
+                    self.lastObservedActiveWindowSeconds = detailInfo.activeWindowSeconds ?? 120
+                    if quotaInfo.ok {
+                        info = detailInfo.replacingQuota(
+                            with: quotaInfo,
+                            activeThreads: self.lastObservedActiveThreads,
+                            activeWindowSeconds: self.lastObservedActiveWindowSeconds
+                        )
+                    } else if let cached = self.lastGoodInfo, cached.quotaSource == "app_server" {
+                        info = detailInfo.replacingQuota(
+                            with: cached,
+                            activeThreads: self.lastObservedActiveThreads,
+                            activeWindowSeconds: self.lastObservedActiveWindowSeconds
+                        )
+                    } else {
+                        info = detailInfo
+                    }
+                } else if quotaInfo.ok, let cached = self.lastGoodInfo {
+                    info = cached.replacingQuota(
+                        with: quotaInfo,
+                        activeThreads: self.lastObservedActiveThreads,
+                        activeWindowSeconds: self.lastObservedActiveWindowSeconds
                     )
-                    self.iconView.tooltipText = self.t(
-                        "实时额度读取失败，显示上次成功数据",
-                        "Live quota read failed, showing last successful data"
-                    )
-                    scheduleAsFailure = true
-                } else if info.ok {
+                } else {
+                    info = quotaInfo
+                }
+                if info.ok {
                     self.lastGoodInfo = info
-                    self.lastKnownSourceUpdatedAt = info.timestamp
                     self.render(info)
+                    if !quotaInfo.ok, info.quotaSource == "app_server" {
+                        self.setInfoItem(
+                            self.updatedItem,
+                            label: self.t("旧数据", "Stale"),
+                            value: self.formatDataTimestamp(info.timestamp)
+                        )
+                        self.iconView.tooltipText = self.t(
+                            "实时额度读取失败，显示上次成功数据",
+                            "Live quota read failed, showing last successful data"
+                        )
+                    }
                 } else if let cached = self.lastGoodInfo {
                     self.render(cached)
                     self.setInfoItem(
@@ -234,21 +468,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.render(info)
                 }
                 self.isRefreshing = false
-                self.scheduleNextRefresh(for: scheduleAsFailure ? nil : info)
+                if self.pendingScheduledRefresh {
+                    self.pendingScheduledRefresh = false
+                    self.refreshScheduled()
+                } else if reschedule {
+                    self.scheduleNextRefresh(for: quotaInfo.ok ? info : nil)
+                } else if !quotaInfo.ok {
+                    self.scheduleFailureRetryPreservingEarlierTimer()
+                }
             }
         }
     }
 
-    private func shouldKeepCachedQuota(over info: QuotaInfo) -> Bool {
-        guard let cached = lastGoodInfo else { return false }
-        return cached.quotaSource == "app_server" && info.quotaSource == "rollout"
-    }
-
     func menuWillOpen(_ menu: NSMenu) {
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
-        if UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey) {
-            refreshNow()
+        configureIconStyleMenu()
+        guard !isRefreshing else { return }
+        let now = Date()
+        let lastAttemptIsRecent = lastMenuRefreshAttemptAt.map {
+            let age = now.timeIntervalSince($0)
+            return age >= 0 && age < Self.menuQuotaFreshnessSeconds
+        } ?? false
+        guard !lastAttemptIsRecent else { return }
+        let fullSyncEnabled = UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey)
+        let snapshotIsFresh = Self.parseQuotaTimestamp(lastGoodInfo?.timestamp).map { timestamp in
+            let age = now.timeIntervalSince(timestamp)
+            return age >= 0 && age < Self.menuQuotaFreshnessSeconds
+        } ?? false
+        guard fullSyncEnabled || !snapshotIsFresh else { return }
+        lastMenuRefreshAttemptAt = now
+        performRefresh(includeDetails: fullSyncEnabled, reschedule: false)
+    }
+
+    private static func parseQuotaTimestamp(_ timestamp: String?) -> Date? {
+        guard var timestamp, !timestamp.isEmpty else { return nil }
+        if timestamp.hasSuffix("Z") {
+            timestamp = String(timestamp.dropLast()) + "+00:00"
         }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: timestamp) ?? fallbackFormatter.date(from: timestamp)
     }
 
     private func render(_ info: QuotaInfo) {
@@ -256,7 +517,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let message = info.error ?? "No quota data"
             iconView.fiveHour = 0
             iconView.week = 0
+            iconView.availableResetCredits = nil
             iconView.serviceTier = "standard"
+            iconView.style = iconStyle
             iconView.needsDisplay = true
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
@@ -275,7 +538,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let week = secondaryExpired ? 100 : max(0, 100 - Int(round(info.secondaryUsed ?? 0)))
         iconView.fiveHour = fiveHour
         iconView.week = week
+        let availableResetCredits = info.availableResetCredits.map { max(0, $0) }
+        iconView.availableResetCredits = availableResetCredits
         iconView.serviceTier = info.serviceTier ?? "standard"
+        iconView.style = iconStyle
         iconView.needsDisplay = true
 
         let primaryReset = formatReset(info.primaryReset)
@@ -292,9 +558,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
         let dataAt = formatDataTimestamp(info.timestamp)
+        let resetCredits = availableResetCredits.map(String.init) ?? "-"
         let detail = useChinese ? """
         5小时剩余: \(fiveHour)%  \(primaryReset)
         1周剩余: \(week)%  \(secondaryReset)
+        可用重置: \(resetCredits)
         今日: \(today)  \(ratio)\(todayFlag)
         周预测: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
@@ -303,6 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         """ : """
         5h left: \(fiveHour)%  \(primaryReset)
         1w left: \(week)%  \(secondaryReset)
+        Resets available: \(resetCredits)
         Today: \(today)  \(ratio)\(todayFlag)
         Weekly forecast: \(weeklyPrediction.status)  \(weeklyPrediction.detail ?? "")
         Top: \(topThread)  \(topThreadTokens)
@@ -371,7 +640,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func syncOnOpenTitle() -> String {
         let enabled = UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey)
-        return enabled ? t("打开菜单时刷新：开", "Sync on open: On") : t("打开菜单时刷新：关", "Sync on open: Off")
+        return enabled ? t("打开时完整刷新：开", "Full sync on open: On") : t("打开时完整刷新：关", "Full sync on open: Off")
+    }
+
+    private var iconStyle: IconStyle {
+        IconStyle(rawValue: UserDefaults.standard.string(forKey: Self.iconStyleKey) ?? "") ?? .resetCredits
+    }
+
+    private func configureIconStyleMenu() {
+        let submenu = NSMenu(title: t("图标样式", "Icon Style"))
+        let resetCreditsItem = NSMenuItem(
+            title: t("骰子双环（重置次数）", "Rounded dice (reset credits)"),
+            action: #selector(selectResetCreditsIcon),
+            keyEquivalent: ""
+        )
+        resetCreditsItem.target = self
+        resetCreditsItem.state = iconStyle == .resetCredits ? .on : .off
+        submenu.addItem(resetCreditsItem)
+
+        let serviceTierItem = NSMenuItem(
+            title: t("圆环闪电（速度档位）", "Round bolt (service tier)"),
+            action: #selector(selectServiceTierIcon),
+            keyEquivalent: ""
+        )
+        serviceTierItem.target = self
+        serviceTierItem.state = iconStyle == .serviceTier ? .on : .off
+        submenu.addItem(serviceTierItem)
+
+        iconStyleItem.title = t("图标样式", "Icon Style")
+        iconStyleItem.submenu = submenu
+    }
+
+    @objc private func selectResetCreditsIcon() {
+        setIconStyle(.resetCredits)
+    }
+
+    @objc private func selectServiceTierIcon() {
+        setIconStyle(.serviceTier)
+    }
+
+    private func setIconStyle(_ style: IconStyle) {
+        UserDefaults.standard.set(style.rawValue, forKey: Self.iconStyleKey)
+        iconView.style = style
+        iconView.needsDisplay = true
+        configureIconStyleMenu()
     }
 
     @objc private func toggleSyncOnOpen() {
@@ -387,20 +699,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refreshTimer = Timer.scheduledTimer(
                 timeInterval: nextRefreshInterval,
                 target: self,
-                selector: #selector(refreshNow),
+                selector: #selector(refreshScheduled),
                 userInfo: nil,
                 repeats: false
             )
             return
         }
-        let activeThreads = info.activeThreads ?? 0
+        let activeThreads = lastObservedActiveThreads
         nextRefreshInterval = activeThreads > 0
             ? Self.refreshInterval(for: Self.activeRefreshMinutesKey, defaultMinutes: Self.defaultActiveRefreshMinutes)
             : Self.refreshInterval(for: Self.idleRefreshMinutesKey, defaultMinutes: Self.defaultIdleRefreshMinutes)
         refreshTimer = Timer.scheduledTimer(
             timeInterval: nextRefreshInterval,
             target: self,
-            selector: #selector(refreshNow),
+            selector: #selector(refreshScheduled),
+            userInfo: nil,
+            repeats: false
+        )
+    }
+
+    private func scheduleFailureRetryPreservingEarlierTimer() {
+        let retryInterval = Self.refreshInterval(
+            for: Self.failureRetryMinutesKey,
+            defaultMinutes: Self.defaultFailureRetryMinutes
+        )
+        let retryDate = Date().addingTimeInterval(retryInterval)
+        if let refreshTimer, refreshTimer.isValid, refreshTimer.fireDate <= retryDate {
+            return
+        }
+        refreshTimer?.invalidate()
+        nextRefreshInterval = retryInterval
+        refreshTimer = Timer.scheduledTimer(
+            timeInterval: retryInterval,
+            target: self,
+            selector: #selector(refreshScheduled),
             userInfo: nil,
             repeats: false
         )
@@ -425,10 +757,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard probe.ok else { return }
                 let activeThreads = probe.activeThreads ?? 0
                 let windowSeconds = probe.activeWindowSeconds ?? 120
-                let sourceAdvanced = Self.isLaterTimestamp(probe.sourceUpdatedAt, than: self.lastKnownSourceUpdatedAt)
-                let becameActive = activeThreads > 0 && (self.lastGoodInfo?.activeThreads ?? 0) == 0
+                let becameActive = activeThreads > 0 && self.lastObservedActiveThreads == 0
+                self.lastObservedActiveThreads = activeThreads
+                self.lastObservedActiveWindowSeconds = windowSeconds
 
-                if let cached = self.lastGoodInfo, (cached.activeThreads ?? 0) == 0 {
+                if self.lastGoodInfo != nil {
                     self.setInfoItem(
                         self.activityItem,
                         label: self.t("后台活动", "Activity"),
@@ -436,12 +769,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     )
                 }
 
-                guard sourceAdvanced || becameActive else { return }
-                if becameActive, let last = self.lastProbeTriggeredRefreshAt, Date().timeIntervalSince(last) < 240 {
+                guard becameActive else { return }
+                if let last = self.lastProbeTriggeredRefreshAt, Date().timeIntervalSince(last) < 240 {
                     return
                 }
                 self.lastProbeTriggeredRefreshAt = Date()
-                self.refreshNow()
+                self.refreshScheduled()
             }
         }
     }
@@ -458,26 +791,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return TimeInterval(max(30, seconds))
     }
 
-    private static func isLaterTimestamp(_ lhs: String?, than rhs: String?) -> Bool {
-        guard let lhsDate = parseCodexTimestamp(lhs) else { return false }
-        guard let rhsDate = parseCodexTimestamp(rhs) else { return true }
-        return lhsDate.timeIntervalSince(rhsDate) > 0.5
+    private static func detailRefreshInterval() -> TimeInterval {
+        let configured = UserDefaults.standard.integer(forKey: detailRefreshMinutesKey)
+        let minutes = configured > 0 ? configured : defaultDetailRefreshMinutes
+        return TimeInterval(max(60, minutes) * 60)
     }
 
-    private static func parseCodexTimestamp(_ timestamp: String?) -> Date? {
-        guard var timestamp, !timestamp.isEmpty else { return nil }
-        if timestamp.hasSuffix("Z") {
-            timestamp = String(timestamp.dropLast()) + "+00:00"
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-        fallbackFormatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: timestamp) ?? fallbackFormatter.date(from: timestamp)
+    private static func readQuotaOnly() -> QuotaInfo {
+        return readPythonOutput(as: QuotaInfo.self, arguments: ["--quota-only"])
     }
 
-    private static func readQuota() -> QuotaInfo {
-        return readPythonOutput(as: QuotaInfo.self, arguments: [])
+    private static func readDetails() -> QuotaInfo {
+        return readPythonOutput(as: QuotaInfo.self, arguments: ["--details-only"])
     }
 
     private static func readActivityProbe() -> ActivityProbeInfo {
@@ -509,6 +834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 limitName: nil,
                 quotaSource: nil,
                 serviceTier: nil,
+                availableResetCredits: nil,
                 primaryUsed: nil,
                 secondaryUsed: nil,
                 primaryReset: nil,
@@ -680,7 +1006,10 @@ db_path = home / ".codex" / "state_5.sqlite"
 session_index_path = home / ".codex" / "session_index.jsonl"
 global_state_path = home / ".codex" / ".codex-global-state.json"
 config_path = home / ".codex" / "config.toml"
-codex_binary = pathlib.Path("/Applications/Codex.app/Contents/Resources/codex")
+codex_binary_candidates = [
+    pathlib.Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
+    pathlib.Path("/Applications/Codex.app/Contents/Resources/codex"),
+]
 tz = timezone(timedelta(hours=8))
 now = datetime.now(tz)
 today = now.date()
@@ -741,47 +1070,25 @@ def read_config_service_tier(path):
             if value is not None:
                 return normalize_service_tier(value)
             desktop = data.get("desktop") or {}
-            value = data.get("default-service-tier")
-            if value is not None:
-                return normalize_service_tier(value)
             value = desktop.get("default-service-tier")
             if value is not None:
                 return normalize_service_tier(value)
         except Exception:
             pass
-    current_section = []
-    service_tier_value = None
-    legacy_service_tier_value = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current_section = [part.strip() for part in line.strip("[]").split(".")]
-            continue
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        normalized_key = key.strip()
-        if normalized_key == "service_tier" and current_section == []:
-            service_tier_value = normalize_service_tier(value.split("#", 1)[0])
-        if normalized_key == "default-service-tier" and current_section in ([], ["desktop"]):
-            legacy_service_tier_value = normalize_service_tier(value.split("#", 1)[0])
-    if service_tier_value:
-        return service_tier_value
-    if legacy_service_tier_value:
-        return legacy_service_tier_value
+        if line.startswith("default-service-tier") and "=" in line:
+            return normalize_service_tier(line.split("=", 1)[1].split("#", 1)[0])
     return None
 
-def read_service_tier(global_path, config_path):
+def read_service_tier():
     config_value = read_config_service_tier(config_path)
     if config_value:
         return config_value
     try:
-        data = json.loads(global_path.read_text(encoding="utf-8"))
+        data = json.loads(global_state_path.read_text(encoding="utf-8"))
         state = data.get("electron-persisted-atom-state") or {}
-        value = state.get("default-service-tier")
-        return normalize_service_tier(value)
+        return normalize_service_tier(state.get("default-service-tier"))
     except Exception:
         return "standard"
 
@@ -819,7 +1126,8 @@ def read_recent_json(path, max_lines=1200):
     return reversed(lines)
 
 def read_app_server_quota(timeout_seconds=8):
-    if not codex_binary.exists():
+    codex_binary = next((path for path in codex_binary_candidates if path.is_file()), None)
+    if codex_binary is None:
         return None
     try:
         proc = subprocess.Popen(
@@ -844,7 +1152,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.27"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.37"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -885,12 +1193,14 @@ def read_app_server_quota(timeout_seconds=8):
                     return None
                 primary = snapshot.get("primary") or {}
                 secondary = snapshot.get("secondary") or {}
+                reset_credits = result.get("rateLimitResetCredits") or {}
                 return {
                     "timestamp": datetime.now(tz).isoformat(),
                     "planType": snapshot.get("planType"),
                     "limitId": snapshot.get("limitId"),
                     "limitName": snapshot.get("limitName"),
                     "quotaSource": "app_server",
+                    "availableResetCredits": reset_credits.get("availableCount"),
                     "primaryUsed": primary.get("usedPercent"),
                     "secondaryUsed": secondary.get("usedPercent"),
                     "primaryReset": primary.get("resetsAt"),
@@ -921,7 +1231,7 @@ def empty_stats_out(snapshot):
         "title": None,
         "model": None,
         "effort": None,
-        "serviceTier": read_service_tier(global_state_path, config_path),
+        "serviceTier": read_service_tier(),
         "totalTokens": None,
         "todayTokens": 0,
         "todayVs3DayAvg": None,
@@ -954,16 +1264,6 @@ def read_activity_probe():
         ).fetchall()
         active = set()
         latest_source_at = 0.0
-        try:
-            if global_state_path.exists():
-                latest_source_at = max(latest_source_at, global_state_path.stat().st_mtime)
-        except Exception:
-            pass
-        try:
-            if config_path.exists():
-                latest_source_at = max(latest_source_at, config_path.stat().st_mtime)
-        except Exception:
-            pass
         cutoff_dt = now - timedelta(seconds=ACTIVE_WINDOW_SECONDS)
         cutoff_epoch = cutoff_dt.timestamp()
         for thread_id, rollout_path, updated_at, updated_at_ms in rows:
@@ -1030,7 +1330,14 @@ if len(sys.argv) > 1 and sys.argv[1] == "--activity-probe":
     print(json.dumps(read_activity_probe(), ensure_ascii=False))
     raise SystemExit(0)
 
-app_server_snapshot = read_app_server_quota()
+details_only = len(sys.argv) > 1 and sys.argv[1] == "--details-only"
+app_server_snapshot = None if details_only else read_app_server_quota()
+
+if len(sys.argv) > 1 and sys.argv[1] == "--quota-only":
+    if app_server_snapshot:
+        print(json.dumps(empty_stats_out(app_server_snapshot), ensure_ascii=False))
+        raise SystemExit(0)
+    fail("Cannot read live Codex quota")
 
 if not db_path.exists():
     if app_server_snapshot:
@@ -1330,7 +1637,7 @@ out.update({
     "ok": True,
     "todayTokens": today_tokens,
     "todayVs3DayAvg": today_vs_3,
-    "serviceTier": read_service_tier(global_state_path, config_path),
+    "serviceTier": read_service_tier(),
     "weeklyBurnPctPerHour": weekly_burn,
     "weeklyEtaHours": weekly_eta,
     "weeklyBudgetRatio": weekly_budget_ratio,
