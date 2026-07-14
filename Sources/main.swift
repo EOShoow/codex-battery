@@ -581,7 +581,6 @@ struct QuotaInfo: Decodable {
     let effort: String?
     let totalTokens: Int?
     let todayTokens: Int?
-    let todayVs3DayAvg: Double?
     let weeklyTrendRatePctPerHour: Double?
     let weeklyTrendConfidence: String?
     let weeklyTrendSpanHours: Double?
@@ -619,7 +618,6 @@ struct QuotaInfo: Decodable {
             effort: effort,
             totalTokens: totalTokens,
             todayTokens: todayTokens,
-            todayVs3DayAvg: todayVs3DayAvg,
             weeklyTrendRatePctPerHour: mergedTrend.rate,
             weeklyTrendConfidence: mergedTrend.confidence,
             weeklyTrendSpanHours: mergedTrend.spanHours,
@@ -890,9 +888,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let primaryReset = formatReset(info.primaryReset)
         let secondaryReset = formatReset(info.secondaryReset)
         let today = info.todayTokens.map { Self.formatCompact($0) } ?? "-"
-        let ratio = info.todayVs3DayAvg.map { String(format: "%.1fx", $0) } ?? "-"
         let weeklyForecast = makeWeeklyForecastPresentation(info)
-        let todayFlag = formatTodayFlag(info.todayVs3DayAvg)
         let topThread = info.topThread ?? "-"
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
@@ -911,7 +907,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             useChinese ? "可用重置: \(resetCredits)  最近 \($0) 到期" : "Resets available: \(resetCredits)  Nearest expires \($0)"
         } ?? (useChinese ? "可用重置: \(resetCredits)" : "Resets available: \(resetCredits)")
         detailLines.append(resetCreditsDetail)
-        detailLines.append(useChinese ? "今日: \(today)  \(ratio)\(todayFlag)" : "Today: \(today)  \(ratio)\(todayFlag)")
+        detailLines.append(useChinese ? "今日: \(today)" : "Today: \(today)")
         detailLines.append(useChinese ? "周预测: \(weeklyForecast.summary)  \(weeklyForecast.confidence)" : "Weekly forecast: \(weeklyForecast.summary)  \(weeklyForecast.confidence)")
         detailLines.append("Top: \(topThread)  \(topThreadTokens)")
         detailLines.append(useChinese ? "后台活动: \(activity)" : "Activity: \(activity)")
@@ -928,7 +924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
         }
         setResetCreditsItem(count: availableResetCredits, expirations: resetCreditExpirations)
-        setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today, detail: "\(ratio)\(todayFlag)")
+        setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today)
         setWeeklyForecastItem(forecastItem, presentation: weeklyForecast)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
@@ -1462,7 +1458,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 effort: nil,
                 totalTokens: nil,
                 todayTokens: nil,
-                todayVs3DayAvg: nil,
                 weeklyTrendRatePctPerHour: nil,
                 weeklyTrendConfidence: nil,
                 weeklyTrendSpanHours: nil,
@@ -1541,19 +1536,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return String(format: "%.0fK", double / 1_000)
         }
         return "\(value)"
-    }
-
-    private func formatTodayFlag(_ ratio: Double?) -> String {
-        guard let ratio, ratio.isFinite else {
-            return ""
-        }
-        if ratio >= 5 {
-            return useChinese ? "    今日冲高" : "    spike today"
-        }
-        if ratio >= 2 {
-            return useChinese ? "    偏快" : "    fast"
-        }
-        return ""
     }
 
     private func formatActivity(_ info: QuotaInfo) -> String {
@@ -1954,7 +1936,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.40"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.41"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -2041,7 +2023,6 @@ def empty_stats_out(snapshot):
         "serviceTier": read_service_tier(),
         "totalTokens": None,
         "todayTokens": 0,
-        "todayVs3DayAvg": None,
         "weeklyTrendRatePctPerHour": None,
         "weeklyTrendConfidence": "low",
         "weeklyTrendSpanHours": 0.0,
@@ -2326,14 +2307,6 @@ if app_server_snapshot:
     })
 
 today_tokens = int(daily[today]["total_tokens"])
-previous_active = [
-    (day, int(counter["total_tokens"]))
-    for day, counter in sorted(daily.items())
-    if day < today and counter["total_tokens"] > 0
-]
-prev3 = previous_active[-3:]
-prev3_avg = sum(total for _, total in prev3) / len(prev3) if prev3 else 0
-today_vs_3 = (today_tokens / prev3_avg) if prev3_avg else None
 
 today_threads = [
     (label, int(counter["total_tokens"]))
@@ -2353,7 +2326,6 @@ out.pop("ts", None)
 out.update({
     "ok": True,
     "todayTokens": today_tokens,
-    "todayVs3DayAvg": today_vs_3,
     "serviceTier": read_service_tier(),
     "weeklyTrendRatePctPerHour": weekly_trend.get("rate"),
     "weeklyTrendConfidence": weekly_trend.get("confidence"),

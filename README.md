@@ -25,7 +25,7 @@ Use it to answer:
 
 - Am I close to the 5-hour wall?
 - Will my weekly quota last until reset?
-- Is today's usage unusually heavy?
+- How many tokens have I used today?
 - Which Codex thread is burning the most tokens?
 
 If you rename a Codex thread in the sidebar, the `Top` row uses that renamed title when Codex writes it to the local session index.
@@ -95,7 +95,7 @@ Example in English (the forecast row is graphical in the app):
 5h left     82%    18:44
 1w left     96%    May 12 08:43
 Resets       4     nearest expires May 10 ›
-Today burn  76.2M  0.3x
+Today burn  76.2M
 Forecast    12% left at reset  medium confidence
 Top         Codex Battery  21.5M
 Activity    1 thread active in 2m
@@ -107,7 +107,7 @@ Example in Chinese:
 ```text
 5小时剩余  82%    18:44
 1周剩余    96%    5月12日 08:43
-今日消耗    76.2M  0.3x
+今日消耗    76.2M
 周预测      预计重置时剩 12%  中置信
 Top         Codex Battery  21.5M
 后台活动    近2分钟 1个线程仍在消耗
