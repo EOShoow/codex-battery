@@ -13,6 +13,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 - Outer rounded ring: weekly quota remaining
 - Inner rounded ring: 5-hour quota remaining
 - Center dice pips: available full-reset credits, visually capped at six while the tooltip keeps the exact count
+- Icon style: choose **Rounded dice (reset credits)** or **Round bolt (service tier)** from the `Icon Style` menu; the choice is remembered locally
 - Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.

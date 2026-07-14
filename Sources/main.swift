@@ -1,10 +1,17 @@
 import AppKit
 import Foundation
 
+fileprivate enum IconStyle: String {
+    case resetCredits
+    case serviceTier
+}
+
 final class QuotaIconView: NSView {
     var fiveHour = 0
     var week = 0
     var availableResetCredits: Int?
+    var serviceTier = "standard"
+    fileprivate var style: IconStyle = .resetCredits
     var tooltipText = "Codex quota" {
         didSet { toolTip = tooltipText }
     }
@@ -22,10 +29,72 @@ final class QuotaIconView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         NSGraphicsContext.current?.shouldAntialias = true
+        switch style {
+        case .resetCredits:
+            drawResetCreditsIcon()
+        case .serviceTier:
+            drawServiceTierIcon()
+        }
+    }
+
+    private func drawResetCreditsIcon() {
         let outerRect = bounds.insetBy(dx: 2.5, dy: 2.5)
         drawRoundedRing(in: outerRect, radius: 5.0, remaining: week, width: 1.5)
         drawRoundedRing(in: outerRect.insetBy(dx: 2.3, dy: 2.3), radius: 2.7, remaining: fiveHour, width: 1.5)
         drawResetPips(availableResetCredits)
+    }
+
+    private func drawServiceTierIcon() {
+        let size = min(bounds.width, bounds.height)
+        let origin = NSPoint(x: bounds.midX - size / 2, y: bounds.midY - size / 2)
+        let square = NSRect(origin: origin, size: NSSize(width: size, height: size)).insetBy(dx: 2.5, dy: 2.5)
+        drawServiceTierRing(in: square, remaining: week, width: 2.7)
+        drawServiceTierRing(in: square.insetBy(dx: 3.5, dy: 3.5), remaining: fiveHour, width: 2.7)
+        drawServiceTierCenterMark(in: square.insetBy(dx: 7.0, dy: 7.0))
+    }
+
+    private func drawServiceTierRing(in rect: NSRect, remaining: Int, width: CGFloat) {
+        let base = NSBezierPath(ovalIn: rect)
+        base.lineWidth = width
+        NSColor.labelColor.withAlphaComponent(0.18).setStroke()
+        base.stroke()
+
+        let clamped = max(0, min(100, remaining))
+        guard clamped > 0 else { return }
+
+        let arc = NSBezierPath()
+        arc.appendArc(
+            withCenter: NSPoint(x: rect.midX, y: rect.midY),
+            radius: min(rect.width, rect.height) / 2,
+            startAngle: 90,
+            endAngle: 90 - CGFloat(clamped) / 100 * 360,
+            clockwise: true
+        )
+        arc.lineWidth = width
+        arc.lineCapStyle = .round
+        NSColor.labelColor.withAlphaComponent(0.86).setStroke()
+        arc.stroke()
+    }
+
+    private func drawServiceTierCenterMark(in rect: NSRect) {
+        guard !Self.isStandardServiceTier(serviceTier) else { return }
+        let x = rect.midX
+        let y = rect.midY
+        let bolt = NSBezierPath()
+        bolt.move(to: NSPoint(x: x + 0.9, y: y + 4.0))
+        bolt.line(to: NSPoint(x: x - 3.0, y: y - 0.2))
+        bolt.line(to: NSPoint(x: x - 0.5, y: y - 0.2))
+        bolt.line(to: NSPoint(x: x - 1.0, y: y - 4.0))
+        bolt.line(to: NSPoint(x: x + 3.0, y: y + 0.6))
+        bolt.line(to: NSPoint(x: x + 0.5, y: y + 0.6))
+        bolt.close()
+        NSColor.labelColor.withAlphaComponent(0.9).setFill()
+        bolt.fill()
+    }
+
+    private static func isStandardServiceTier(_ serviceTier: String) -> Bool {
+        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty || normalized == "standard" || normalized == "default" || normalized == "none" || normalized == "null"
     }
 
     private func drawRoundedRing(in rect: NSRect, radius: CGFloat, remaining: Int, width: CGFloat) {
@@ -166,6 +235,7 @@ struct QuotaInfo: Decodable {
     let limitId: String?
     let limitName: String?
     let quotaSource: String?
+    let serviceTier: String?
     let availableResetCredits: Int?
     let primaryUsed: Double?
     let secondaryUsed: Double?
@@ -197,6 +267,7 @@ struct QuotaInfo: Decodable {
             limitId: quota.limitId,
             limitName: quota.limitName,
             quotaSource: quota.quotaSource,
+            serviceTier: serviceTier ?? quota.serviceTier,
             availableResetCredits: quota.availableResetCredits,
             primaryUsed: quota.primaryUsed,
             secondaryUsed: quota.secondaryUsed,
@@ -239,6 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let failureRetryMinutesKey = "failureRetryMinutes"
     private static let activityProbeSecondsKey = "activityProbeSeconds"
     private static let detailRefreshMinutesKey = "detailRefreshMinutes"
+    private static let iconStyleKey = "iconStyle"
     private static let defaultActiveRefreshMinutes = 5
     private static let defaultIdleRefreshMinutes = 30
     private static let defaultFailureRetryMinutes = 5
@@ -257,6 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let updatedItem = NSMenuItem(title: "Data at -", action: nil, keyEquivalent: "")
     private let refreshItem = NSMenuItem(title: "Refresh", action: nil, keyEquivalent: "")
     private let syncOnOpenItem = NSMenuItem(title: "Sync on open Off", action: nil, keyEquivalent: "")
+    private let iconStyleItem = NSMenuItem(title: "Icon Style", action: nil, keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
     private let useChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
     private var refreshTimer: Timer?
@@ -288,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureActionItem(refreshItem, title: t("刷新", "Refresh"), action: #selector(refreshNow))
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
         configureActionItem(quitItem, title: t("退出", "Quit"), action: #selector(quit))
+        configureIconStyleMenu()
         menu.delegate = self
         menu.addItem(fiveHourItem)
         menu.addItem(weekItem)
@@ -297,6 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(activityItem)
         menu.addItem(updatedItem)
         menu.addItem(.separator())
+        menu.addItem(iconStyleItem)
         menu.addItem(refreshItem)
         menu.addItem(syncOnOpenItem)
         menu.addItem(quitItem)
@@ -407,6 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
+        configureIconStyleMenu()
         guard !isRefreshing else { return }
         let now = Date()
         let lastAttemptIsRecent = lastMenuRefreshAttemptAt.map {
@@ -442,6 +518,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             iconView.fiveHour = 0
             iconView.week = 0
             iconView.availableResetCredits = nil
+            iconView.serviceTier = "standard"
+            iconView.style = iconStyle
             iconView.needsDisplay = true
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
@@ -462,6 +540,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         iconView.week = week
         let availableResetCredits = info.availableResetCredits.map { max(0, $0) }
         iconView.availableResetCredits = availableResetCredits
+        iconView.serviceTier = info.serviceTier ?? "standard"
+        iconView.style = iconStyle
         iconView.needsDisplay = true
 
         let primaryReset = formatReset(info.primaryReset)
@@ -561,6 +641,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func syncOnOpenTitle() -> String {
         let enabled = UserDefaults.standard.bool(forKey: Self.syncOnMenuOpenKey)
         return enabled ? t("打开时完整刷新：开", "Full sync on open: On") : t("打开时完整刷新：关", "Full sync on open: Off")
+    }
+
+    private var iconStyle: IconStyle {
+        IconStyle(rawValue: UserDefaults.standard.string(forKey: Self.iconStyleKey) ?? "") ?? .resetCredits
+    }
+
+    private func configureIconStyleMenu() {
+        let submenu = NSMenu(title: t("图标样式", "Icon Style"))
+        let resetCreditsItem = NSMenuItem(
+            title: t("骰子双环（重置次数）", "Rounded dice (reset credits)"),
+            action: #selector(selectResetCreditsIcon),
+            keyEquivalent: ""
+        )
+        resetCreditsItem.target = self
+        resetCreditsItem.state = iconStyle == .resetCredits ? .on : .off
+        submenu.addItem(resetCreditsItem)
+
+        let serviceTierItem = NSMenuItem(
+            title: t("圆环闪电（速度档位）", "Round bolt (service tier)"),
+            action: #selector(selectServiceTierIcon),
+            keyEquivalent: ""
+        )
+        serviceTierItem.target = self
+        serviceTierItem.state = iconStyle == .serviceTier ? .on : .off
+        submenu.addItem(serviceTierItem)
+
+        iconStyleItem.title = t("图标样式", "Icon Style")
+        iconStyleItem.submenu = submenu
+    }
+
+    @objc private func selectResetCreditsIcon() {
+        setIconStyle(.resetCredits)
+    }
+
+    @objc private func selectServiceTierIcon() {
+        setIconStyle(.serviceTier)
+    }
+
+    private func setIconStyle(_ style: IconStyle) {
+        UserDefaults.standard.set(style.rawValue, forKey: Self.iconStyleKey)
+        iconView.style = style
+        iconView.needsDisplay = true
+        configureIconStyleMenu()
     }
 
     @objc private func toggleSyncOnOpen() {
@@ -710,6 +833,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 limitId: nil,
                 limitName: nil,
                 quotaSource: nil,
+                serviceTier: nil,
                 availableResetCredits: nil,
                 primaryUsed: nil,
                 secondaryUsed: nil,
@@ -872,10 +996,16 @@ import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+try:
+    import tomllib
+except Exception:
+    tomllib = None
 
 home = pathlib.Path.home()
 db_path = home / ".codex" / "state_5.sqlite"
 session_index_path = home / ".codex" / "session_index.jsonl"
+global_state_path = home / ".codex" / ".codex-global-state.json"
+config_path = home / ".codex" / "config.toml"
 codex_binary_candidates = [
     pathlib.Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
     pathlib.Path("/Applications/Codex.app/Contents/Resources/codex"),
@@ -919,6 +1049,48 @@ def parse_ts(value):
 
 def compact_title(value):
     return (value or "Unknown").replace("\n", " ")[:28]
+
+def normalize_service_tier(value):
+    if value is None:
+        return "standard"
+    text = str(value).strip().strip('"').strip("'")
+    return text or "standard"
+
+def read_config_service_tier(path):
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(text)
+            value = data.get("service_tier")
+            if value is not None:
+                return normalize_service_tier(value)
+            desktop = data.get("desktop") or {}
+            value = desktop.get("default-service-tier")
+            if value is not None:
+                return normalize_service_tier(value)
+        except Exception:
+            pass
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("default-service-tier") and "=" in line:
+            return normalize_service_tier(line.split("=", 1)[1].split("#", 1)[0])
+    return None
+
+def read_service_tier():
+    config_value = read_config_service_tier(config_path)
+    if config_value:
+        return config_value
+    try:
+        data = json.loads(global_state_path.read_text(encoding="utf-8"))
+        state = data.get("electron-persisted-atom-state") or {}
+        return normalize_service_tier(state.get("default-service-tier"))
+    except Exception:
+        return "standard"
 
 def load_thread_names(path):
     names = {}
@@ -1059,6 +1231,7 @@ def empty_stats_out(snapshot):
         "title": None,
         "model": None,
         "effort": None,
+        "serviceTier": read_service_tier(),
         "totalTokens": None,
         "todayTokens": 0,
         "todayVs3DayAvg": None,
@@ -1464,6 +1637,7 @@ out.update({
     "ok": True,
     "todayTokens": today_tokens,
     "todayVs3DayAvg": today_vs_3,
+    "serviceTier": read_service_tier(),
     "weeklyBurnPctPerHour": weekly_burn,
     "weeklyEtaHours": weekly_eta,
     "weeklyBudgetRatio": weekly_budget_ratio,
