@@ -371,12 +371,70 @@ private enum WeeklyForecastClock {
     }
 }
 
+private struct ResetCreditMarkerTiming {
+    let expiration: Date
+    let progress: CGFloat
+    let countOnDay: Int
+    let isUrgent: Bool
+}
+
+private enum ResetCreditTimeline {
+    static func futureExpirations(_ seconds: [Int]?, now: Date = Date()) -> [Date] {
+        (seconds ?? [])
+            .map { Date(timeIntervalSince1970: TimeInterval($0)) }
+            .filter { $0 > now }
+            .sorted()
+    }
+
+    static func progress(for expiration: Date, from start: Date, to reset: Date) -> CGFloat? {
+        let duration = reset.timeIntervalSince(start)
+        guard duration > 0,
+              expiration >= start,
+              expiration <= reset else { return nil }
+        return CGFloat(expiration.timeIntervalSince(start) / duration)
+    }
+
+    static func nearestMarker(
+        expirations: [Int]?,
+        now: Date,
+        start: Date,
+        reset: Date,
+        calendar: Calendar = .current
+    ) -> ResetCreditMarkerTiming? {
+        let inCurrentWeek = futureExpirations(expirations, now: now)
+            .filter { $0 >= start && $0 <= reset }
+        guard let nearest = inCurrentWeek.first,
+              let progress = progress(for: nearest, from: start, to: reset) else {
+            return nil
+        }
+        let countOnDay = inCurrentWeek.filter { calendar.isDate($0, inSameDayAs: nearest) }.count
+        return ResetCreditMarkerTiming(
+            expiration: nearest,
+            progress: progress,
+            countOnDay: countOnDay,
+            isUrgent: nearest.timeIntervalSince(now) <= 24 * 3600
+        )
+    }
+
+    static func missingExpiryCount(availableCount: Int?, knownExpirations: Int) -> Int {
+        guard let availableCount else { return 0 }
+        return max(0, availableCount - max(0, knownExpirations))
+    }
+}
+
+private struct ResetCreditExpiryMarker {
+    let progress: CGFloat
+    let label: String
+    let tone: NSColor
+}
+
 private struct WeeklyForecastPresentation {
     let summary: String
     let confidence: String
     let actualPoints: [CGPoint]
     let currentPoint: CGPoint?
     let forecastPoint: CGPoint?
+    let resetCreditMarker: ResetCreditExpiryMarker?
     let tone: NSColor
     let tooltip: String
 }
@@ -390,6 +448,7 @@ final class WeeklyForecastView: NSView {
     var actualPoints: [CGPoint] = []
     var currentPoint: CGPoint?
     var forecastPoint: CGPoint?
+    fileprivate var resetCreditMarker: ResetCreditExpiryMarker?
     var tone = NSColor.secondaryLabelColor
 
     override func draw(_ dirtyRect: NSRect) {
@@ -408,17 +467,17 @@ final class WeeklyForecastView: NSView {
         ]
 
         NSAttributedString(string: title, attributes: titleAttributes)
-            .draw(in: NSRect(x: 16, y: 43, width: 90, height: 18))
+            .draw(in: NSRect(x: 16, y: 57, width: 90, height: 18))
         NSAttributedString(string: summary, attributes: summaryAttributes)
-            .draw(in: NSRect(x: 112, y: 43, width: 245, height: 18))
+            .draw(in: NSRect(x: 112, y: 57, width: 245, height: 18))
         let rightAligned = NSMutableParagraphStyle()
         rightAligned.alignment = .right
         var rightSmallAttributes = smallAttributes
         rightSmallAttributes[.paragraphStyle] = rightAligned
         NSAttributedString(string: confidence, attributes: rightSmallAttributes)
-            .draw(in: NSRect(x: 360, y: 45, width: 84, height: 15))
+            .draw(in: NSRect(x: 360, y: 59, width: 84, height: 15))
 
-        let graph = NSRect(x: 112, y: 15, width: 332, height: 24)
+        let graph = NSRect(x: 112, y: 27, width: 332, height: 25)
         let background = NSBezierPath(roundedRect: graph, xRadius: 4, yRadius: 4)
         NSColor.labelColor.withAlphaComponent(0.045).setFill()
         background.fill()
@@ -430,6 +489,34 @@ final class WeeklyForecastView: NSView {
         ideal.setLineDash([3, 3], count: 2, phase: 0)
         NSColor.secondaryLabelColor.withAlphaComponent(0.45).setStroke()
         ideal.stroke()
+
+        if let marker = resetCreditMarker {
+            let markerX = graph.minX + max(0, min(1, marker.progress)) * graph.width
+            let markerLine = NSBezierPath()
+            markerLine.move(to: NSPoint(x: markerX, y: graph.minY - 2))
+            markerLine.line(to: NSPoint(x: markerX, y: graph.maxY + 1))
+            markerLine.lineWidth = 1
+            markerLine.setLineDash([2, 2], count: 2, phase: 0)
+            marker.tone.withAlphaComponent(0.9).setStroke()
+            markerLine.stroke()
+
+            let markerTriangle = NSBezierPath()
+            markerTriangle.move(to: NSPoint(x: markerX, y: graph.minY + 1))
+            markerTriangle.line(to: NSPoint(x: markerX - 3, y: graph.minY + 6))
+            markerTriangle.line(to: NSPoint(x: markerX + 3, y: graph.minY + 6))
+            markerTriangle.close()
+            marker.tone.setFill()
+            markerTriangle.fill()
+
+            let markerAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 9, weight: .medium),
+                .foregroundColor: marker.tone,
+            ]
+            let markerText = NSAttributedString(string: marker.label, attributes: markerAttributes)
+            let markerWidth = min(126, ceil(markerText.size().width) + 4)
+            let markerXOrigin = max(graph.minX, min(graph.maxX - markerWidth, markerX - markerWidth / 2))
+            markerText.draw(in: NSRect(x: markerXOrigin + 2, y: 13, width: markerWidth, height: 12))
+        }
 
         if actualPoints.count >= 2 {
             let actual = NSBezierPath()
@@ -484,6 +571,7 @@ struct QuotaInfo: Decodable {
     let quotaSource: String?
     let serviceTier: String?
     let availableResetCredits: Int?
+    let resetCreditExpirations: [Int]?
     let primaryUsed: Double?
     let secondaryUsed: Double?
     let primaryReset: Int?
@@ -521,6 +609,7 @@ struct QuotaInfo: Decodable {
             quotaSource: quota.quotaSource,
             serviceTier: serviceTier ?? quota.serviceTier,
             availableResetCredits: quota.availableResetCredits,
+            resetCreditExpirations: quota.resetCreditExpirations,
             primaryUsed: quota.primaryUsed,
             secondaryUsed: quota.secondaryUsed,
             primaryReset: quota.primaryReset,
@@ -572,6 +661,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let menu = NSMenu()
     private let fiveHourItem = NSMenuItem(title: "5h -", action: nil, keyEquivalent: "")
     private let weekItem = NSMenuItem(title: "1w -", action: nil, keyEquivalent: "")
+    private let resetCreditsItem = NSMenuItem(title: "Resets -", action: nil, keyEquivalent: "")
     private let todayItem = NSMenuItem(title: "Today -", action: nil, keyEquivalent: "")
     private let forecastItem = NSMenuItem(title: "Forecast -", action: nil, keyEquivalent: "")
     private let topItem = NSMenuItem(title: "Top -", action: nil, keyEquivalent: "")
@@ -615,6 +705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         menu.addItem(fiveHourItem)
         menu.addItem(weekItem)
+        menu.addItem(resetCreditsItem)
         menu.addItem(todayItem)
         menu.addItem(forecastItem)
         menu.addItem(topItem)
@@ -655,6 +746,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if includeDetails || lastGoodInfo == nil {
             setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: t("刷新中...", "Refreshing..."))
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
+            setResetCreditsItem(count: nil, expirations: [])
             setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
             setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
             setInfoItem(topItem, label: "Top", value: "-")
@@ -775,6 +867,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             weekItem.isHidden = true
             forecastItem.isHidden = false
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
+            setResetCreditsItem(count: nil, expirations: [])
             setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
             setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
             setInfoItem(topItem, label: "Top", value: "-")
@@ -805,6 +898,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let activity = formatActivity(info)
         let dataAt = formatDataTimestamp(info.timestamp)
         let resetCredits = availableResetCredits.map(String.init) ?? "-"
+        let resetCreditExpirations = ResetCreditTimeline.futureExpirations(info.resetCreditExpirations)
+        let nearestCreditExpiry = resetCreditExpirations.first.map(formatResetCreditExpiry)
         var detailLines: [String] = []
         if let fiveHour {
             detailLines.append(useChinese ? "5小时剩余: \(fiveHour)%  \(primaryReset)" : "5h left: \(fiveHour)%  \(primaryReset)")
@@ -812,7 +907,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let week {
             detailLines.append(useChinese ? "1周剩余: \(week)%  \(secondaryReset)" : "1w left: \(week)%  \(secondaryReset)")
         }
-        detailLines.append(useChinese ? "可用重置: \(resetCredits)" : "Resets available: \(resetCredits)")
+        let resetCreditsDetail = nearestCreditExpiry.map {
+            useChinese ? "可用重置: \(resetCredits)  最近 \($0) 到期" : "Resets available: \(resetCredits)  Nearest expires \($0)"
+        } ?? (useChinese ? "可用重置: \(resetCredits)" : "Resets available: \(resetCredits)")
+        detailLines.append(resetCreditsDetail)
         detailLines.append(useChinese ? "今日: \(today)  \(ratio)\(todayFlag)" : "Today: \(today)  \(ratio)\(todayFlag)")
         detailLines.append(useChinese ? "周预测: \(weeklyForecast.summary)  \(weeklyForecast.confidence)" : "Weekly forecast: \(weeklyForecast.summary)  \(weeklyForecast.confidence)")
         detailLines.append("Top: \(topThread)  \(topThreadTokens)")
@@ -829,6 +927,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let week {
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
         }
+        setResetCreditsItem(count: availableResetCredits, expirations: resetCreditExpirations)
         setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today, detail: "\(ratio)\(todayFlag)")
         setWeeklyForecastItem(forecastItem, presentation: weeklyForecast)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
@@ -851,6 +950,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 actualPoints: [],
                 currentPoint: nil,
                 forecastPoint: nil,
+                resetCreditMarker: nil,
                 tone: .secondaryLabelColor,
                 tooltip: t("当前没有可预测的周额度窗口", "No weekly quota window is available for forecasting")
             )
@@ -866,6 +966,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 actualPoints: [],
                 currentPoint: nil,
                 forecastPoint: nil,
+                resetCreditMarker: nil,
                 tone: .secondaryLabelColor,
                 tooltip: t("额度窗口已重置，等待 Codex 返回新周快照。", "The quota window reset; waiting for a new weekly snapshot from Codex.")
             )
@@ -879,6 +980,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let elapsed = max(0, min(weekSeconds, now.timeIntervalSince(startAt)))
         let nowProgress = CGFloat(elapsed / weekSeconds)
         let currentPoint = CGPoint(x: nowProgress, y: CGFloat(max(0, min(100, used)) / 100))
+        let resetCreditMarker = makeResetCreditMarker(
+            expirations: info.resetCreditExpirations,
+            now: now,
+            startAt: startAt,
+            resetAt: resetAt
+        )
 
         var actualPoints = (info.weeklyTrendPoints ?? []).compactMap { point -> CGPoint? in
             let timestamp = Date(timeIntervalSince1970: point.timestamp)
@@ -914,14 +1021,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               rate > 0,
               now < resetAt else {
             let summary = t("样本积累中", "Building forecast")
+            let markerHint = resetCreditMarker.map {
+                t("，竖线标记\($0.label)", "; vertical marker: \($0.label)")
+            } ?? ""
             return WeeklyForecastPresentation(
                 summary: summary,
                 confidence: confidence,
                 actualPoints: actualPoints,
                 currentPoint: currentPoint,
                 forecastPoint: nil,
+                resetCreditMarker: resetCreditMarker,
                 tone: .secondaryLabelColor,
-                tooltip: t("\(summary)。实线为实际消耗，灰线为均匀预算线。", "\(summary). Solid is actual usage; gray is the even-budget line.")
+                tooltip: t(
+                    "\(summary)。实线为实际消耗，灰线为均匀预算线\(markerHint)。",
+                    "\(summary). Solid is actual usage; gray is the even-budget line\(markerHint)."
+                )
             )
         }
 
@@ -956,9 +1070,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forecastPoint = CGPoint(x: 1, y: CGFloat(projectedUsed / 100))
             tone = projectedRemaining < 15 ? .systemOrange : .systemGreen
         }
+        let markerHint = resetCreditMarker.map {
+            t("，竖线标记\($0.label)", "; vertical marker: \($0.label)")
+        } ?? ""
         let tooltip = t(
-            "\(summary)，\(confidence)。实线为实际消耗，彩色虚线为预测，灰线为均匀预算。",
-            "\(summary), \(confidence). Solid is actual usage, colored dash is forecast, gray is the even-budget line."
+            "\(summary)，\(confidence)。实线为实际消耗，彩色虚线为预测，灰线为均匀预算\(markerHint)。",
+            "\(summary), \(confidence). Solid is actual usage, colored dash is forecast, gray is the even-budget line\(markerHint)."
         )
         return WeeklyForecastPresentation(
             summary: summary,
@@ -966,13 +1083,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             actualPoints: actualPoints,
             currentPoint: currentPoint,
             forecastPoint: forecastPoint,
+            resetCreditMarker: resetCreditMarker,
             tone: tone,
             tooltip: tooltip
         )
     }
 
     private func setWeeklyForecastItem(_ item: NSMenuItem, presentation: WeeklyForecastPresentation) {
-        let view = WeeklyForecastView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 68))
+        let view = WeeklyForecastView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 82))
         view.title = t("周预测", "Forecast")
         view.summary = presentation.summary
         view.confidence = presentation.confidence
@@ -981,9 +1099,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         view.actualPoints = presentation.actualPoints
         view.currentPoint = presentation.currentPoint
         view.forecastPoint = presentation.forecastPoint
+        view.resetCreditMarker = presentation.resetCreditMarker
         view.tone = presentation.tone
         view.toolTip = presentation.tooltip
         item.view = view
+    }
+
+    private func makeResetCreditMarker(
+        expirations: [Int]?,
+        now: Date,
+        startAt: Date,
+        resetAt: Date
+    ) -> ResetCreditExpiryMarker? {
+        guard let timing = ResetCreditTimeline.nearestMarker(
+            expirations: expirations,
+            now: now,
+            start: startAt,
+            reset: resetAt
+        ) else { return nil }
+        let label = t(
+            "最近 \(timing.countOnDay) 次 · \(formatResetCreditAxisDate(timing.expiration))到期",
+            "\(timing.countOnDay) expires \(formatResetCreditAxisDate(timing.expiration))"
+        )
+        let tone: NSColor = timing.isUrgent ? .systemRed : .systemOrange
+        return ResetCreditExpiryMarker(progress: timing.progress, label: label, tone: tone)
+    }
+
+    private func setResetCreditsItem(count: Int?, expirations: [Date]) {
+        resetCreditsItem.view = nil
+        resetCreditsItem.isHidden = false
+        resetCreditsItem.isEnabled = true
+
+        let countText = count.map(String.init) ?? "-"
+        if let nearest = expirations.first {
+            resetCreditsItem.title = t(
+                "可用重置：\(countText) 次 · 最近 \(formatResetCreditExpiry(nearest)) 到期",
+                "Resets available: \(countText) · nearest expires \(formatResetCreditExpiry(nearest))"
+            )
+        } else {
+            resetCreditsItem.title = t("可用重置：\(countText) 次", "Resets available: \(countText)")
+        }
+
+        let submenu = NSMenu(title: t("重置到期日期", "Reset expiry dates"))
+        submenu.autoenablesItems = false
+        let missingExpiryCount = ResetCreditTimeline.missingExpiryCount(
+            availableCount: count,
+            knownExpirations: expirations.count
+        )
+        if expirations.isEmpty, missingExpiryCount == 0 {
+            let empty = NSMenuItem(title: t("暂无到期日期明细", "No expiry-date details"), action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+        } else if !expirations.isEmpty {
+            for (index, expiration) in expirations.enumerated() {
+                let prefix = index == 0 ? t("最近到期", "Nearest") : t("第\(index + 1)次", "#\(index + 1)")
+                let title = "\(prefix)  \(formatResetCreditExpiry(expiration)) · \(formatResetCreditRelative(expiration))"
+                let dateItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                dateItem.isEnabled = false
+                submenu.addItem(dateItem)
+            }
+        }
+        if missingExpiryCount > 0 {
+            if !expirations.isEmpty {
+                submenu.addItem(.separator())
+            }
+            let missing = NSMenuItem(
+                title: t(
+                    "另有 \(missingExpiryCount) 次未返回到期日期",
+                    "\(missingExpiryCount) expiry date(s) unavailable"
+                ),
+                action: nil,
+                keyEquivalent: ""
+            )
+            missing.isEnabled = false
+            submenu.addItem(missing)
+        }
+        resetCreditsItem.submenu = submenu
+    }
+
+    private func formatResetCreditExpiry(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = useChinese ? Locale(identifier: "zh_CN") : Locale(identifier: "en_US")
+        formatter.dateFormat = useChinese ? "M月d日 HH:mm" : "MMM d HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func formatResetCreditAxisDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = useChinese ? Locale(identifier: "zh_CN") : Locale(identifier: "en_US")
+        formatter.dateFormat = useChinese ? "M/d" : "MMM d"
+        return formatter.string(from: date)
+    }
+
+    private func formatResetCreditRelative(_ date: Date, now: Date = Date()) -> String {
+        let seconds = max(0, date.timeIntervalSince(now))
+        if seconds < 3600 {
+            let minutes = max(1, Int(ceil(seconds / 60)))
+            return t("\(minutes)分钟后", "in \(minutes)m")
+        }
+        if seconds < 24 * 3600 {
+            let hours = max(1, Int(ceil(seconds / 3600)))
+            return t("\(hours)小时后", "in \(hours)h")
+        }
+        let days = max(1, Int(ceil(seconds / (24 * 3600))))
+        return t("\(days)天后", "in \(days)d")
     }
 
     private func setInfoItem(_ item: NSMenuItem, label: String, value: String, detail: String? = nil) {
@@ -1233,6 +1452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 quotaSource: nil,
                 serviceTier: nil,
                 availableResetCredits: nil,
+                resetCreditExpirations: nil,
                 primaryUsed: nil,
                 secondaryUsed: nil,
                 primaryReset: nil,
@@ -1549,6 +1769,54 @@ def normalize_quota_windows(primary, secondary):
 
     return five_hour, week
 
+def normalize_reset_credit_count(reset_credits):
+    if not isinstance(reset_credits, dict):
+        return None
+    raw_count = reset_credits.get("availableCount")
+    if raw_count is None:
+        raw_count = reset_credits.get("available_count")
+    count = None
+    if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+        count = raw_count
+    elif isinstance(raw_count, str):
+        text = raw_count.strip()
+        if text.isdigit():
+            count = int(text)
+    if count is not None and count >= 0:
+        return count
+
+    raw_credits = reset_credits.get("credits")
+    if not isinstance(raw_credits, list):
+        return None
+    return sum(
+        1 for credit in raw_credits
+        if isinstance(credit, dict)
+        and str(credit.get("status") or "").lower() == "available"
+    )
+
+def normalize_reset_credit_expirations(reset_credits):
+    if not isinstance(reset_credits, dict):
+        return []
+    raw_credits = reset_credits.get("credits") or []
+    if not isinstance(raw_credits, list):
+        return []
+    expirations = []
+    for credit in raw_credits:
+        if not isinstance(credit, dict):
+            continue
+        if str(credit.get("status") or "").lower() != "available":
+            continue
+        expires_at = credit.get("expiresAt")
+        if expires_at is None:
+            expires_at = credit.get("expires_at")
+        try:
+            expires_at = int(expires_at)
+        except (TypeError, ValueError):
+            continue
+        if expires_at > 0:
+            expirations.append(expires_at)
+    return sorted(expirations)
+
 def prefer_monotonic_quota_values(latest, snapshots):
     for used_key, reset_key in (
         ("primaryUsed", "primaryReset"),
@@ -1686,7 +1954,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.39"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.40"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -1730,13 +1998,16 @@ def read_app_server_quota(timeout_seconds=8):
                     snapshot.get("secondary"),
                 )
                 reset_credits = result.get("rateLimitResetCredits") or {}
+                if not isinstance(reset_credits, dict):
+                    reset_credits = {}
                 return {
                     "timestamp": datetime.now(tz).isoformat(),
                     "planType": snapshot.get("planType"),
                     "limitId": snapshot.get("limitId"),
                     "limitName": snapshot.get("limitName"),
                     "quotaSource": "app_server",
-                    "availableResetCredits": reset_credits.get("availableCount"),
+                    "availableResetCredits": normalize_reset_credit_count(reset_credits),
+                    "resetCreditExpirations": normalize_reset_credit_expirations(reset_credits),
                     "primaryUsed": five_hour.get("used") if five_hour else None,
                     "secondaryUsed": week.get("used") if week else None,
                     "primaryReset": five_hour.get("reset") if five_hour else None,

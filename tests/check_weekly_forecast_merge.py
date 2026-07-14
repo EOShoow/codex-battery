@@ -15,7 +15,7 @@ for required in (
 ):
     assert required in text, f"live quota merge is not wired through the trend calculator: {required}"
 start = text.index("struct WeeklyTrendPoint: Decodable")
-end = text.index("private struct WeeklyForecastPresentation", start)
+end = text.index("private struct ResetCreditExpiryMarker", start)
 calculator = text[start:end]
 
 swift_test = f"""

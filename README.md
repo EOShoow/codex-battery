@@ -13,7 +13,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 - Quota rings adapt to the windows returned by Codex: two rings show weekly + 5-hour remaining, while a weekly-only response shows one outer ring
 - Center dice pips: available full-reset credits, visually capped at six while the tooltip keeps the exact count
 - Icon style: choose **Rounded dice (reset credits)** or **Round bolt (service tier)** from the `Icon Style` menu; the choice is remembered locally
-- Menu details: reset times, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
+- Menu details: reset times, available full-reset credits and their expiry dates, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
 
@@ -94,6 +94,7 @@ Example in English (the forecast row is graphical in the app):
 ```text
 5h left     82%    18:44
 1w left     96%    May 12 08:43
+Resets       4     nearest expires May 10 ›
 Today burn  76.2M  0.3x
 Forecast    12% left at reset  medium confidence
 Top         Codex Battery  21.5M
@@ -113,11 +114,13 @@ Top         Codex Battery  21.5M
 数据于      18:43:17
 ```
 
-The graphical forecast row uses three lines:
+The graphical forecast row uses three trend lines plus an expiry marker:
 
 - Gray diagonal: the even budget needed to use 100% exactly at reset
 - Solid line: actual weekly usage recorded in local Codex snapshots
 - Colored dashed line: projected usage; green means comfortable, orange means close to empty, and red means projected to run out before reset
+
+When full-reset credits are available, the menu shows their count in a separate row. Open that row to see every exact expiry date returned by the API; if the count exceeds the valid dates, the submenu says how many dates are unavailable. The nearest group that expires within the current weekly chart range is marked on the time axis with an orange vertical line and date, turning red inside 24 hours. Expiries after the weekly reset remain in the expanded list instead of stretching and distorting the forecast axis.
 
 The estimate locks samples to the current weekly reset window, collapses duplicate snapshots into 5-minute buckets, and blends the stable since-reset average with roughly the most recent 24-hour pace; when samples are sparse, that recent observation range expands. It also shows low, medium, or high confidence from the observed time span and number of real usage changes. This removes the old fixed `8h/day` assumption and makes short bursts less likely to dominate the result.
 
@@ -182,7 +185,7 @@ Current known baseline:
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
 - Supports the bundled app-server in both `/Applications/ChatGPT.app` and the legacy `/Applications/Codex.app`
 - Reads `~/.codex/state_5.sqlite`
-- Reads the available full-reset count from `rateLimitResetCredits.availableCount`; the center stays blank when that live field is unavailable
+- Reads the available full-reset count from `rateLimitResetCredits.availableCount` and only extracts `expiresAt` from available credits for the local date list and timeline marker; the center stays blank when that live field is unavailable
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
 If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
