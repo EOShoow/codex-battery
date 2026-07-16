@@ -2,16 +2,24 @@
 """Regression checks for the weekly trend model and graphical forecast row."""
 
 from pathlib import Path
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 
 source = Path(__file__).parents[1] / "Sources" / "main.swift"
 text = source.read_text(encoding="utf-8")
 
-start = text.index("def build_weekly_trend(")
-end = text.index("\ndef ", start + 1)
-namespace = {}
+start = text.index("def habit_hour_index(")
+end = text.index("\ndef read_app_server_quota", start)
+namespace = {
+    "Counter": Counter,
+    "datetime": datetime,
+    "timedelta": timedelta,
+    "tz": timezone(timedelta(hours=8)),
+}
 exec(text[start:end], namespace)
 build_weekly_trend = namespace["build_weekly_trend"]
+build_habit_profile = namespace["build_habit_profile"]
 
 hour = 3600
 week = 7 * 24 * hour
@@ -77,6 +85,48 @@ short_burst = [point(0, 0, reset), point(4 * hour, 2, reset), point(8 * hour, 4,
 trend = build_weekly_trend(short_burst, reset, now, 6)
 assert trend["confidence"] == "low"
 
+# A personal work-hours profile moves exhaustion across idle nights instead of
+# extending an afternoon burst through every remaining wall-clock hour.
+habit_weights = [0.02] * 168
+for weekday in range(5):
+    for local_hour in range(8, 18):
+        habit_weights[weekday * 24 + local_hour] = 1.0
+now = 5 * hour
+workday_burst = [
+    point(0, 0, reset),
+    point(2 * hour, 5, reset),
+    point(4 * hour, 15, reset),
+    point(now, 20, reset),
+]
+trend = build_weekly_trend(
+    workday_burst,
+    reset,
+    now,
+    20,
+    habit_weights=habit_weights,
+    habit_offset_seconds=8 * hour,
+    habit_sample_days=21,
+    habit_sample_buckets=80,
+)
+assert trend["model"] == "habit"
+assert trend["confidence"] == "medium"
+assert trend["projectedUsed"] > 100
+assert trend["exhaustAt"] > now + 72 * hour
+
+# The local profile builder learns daytime concentration without retaining any
+# thread title or prompt content.
+window_start = 35 * 24 * hour
+active_buckets = []
+for day_index in range(7, 35):
+    for local_hour in (9, 10, 14, 15):
+        active_buckets.append(day_index * 24 * hour + (local_hour - 8) * hour)
+profile = build_habit_profile(active_buckets, window_start)
+assert profile["sampleDays"] == 28
+assert profile["sampleBuckets"] == 112
+daytime = sum(profile["weights"][weekday * 24 + 10] for weekday in range(7)) / 7
+night = sum(profile["weights"][weekday * 24 + 3] for weekday in range(7)) / 7
+assert daytime > night * 5
+
 # A sharp recent burst is bounded so it influences but does not replace the
 # stable since-reset rate.
 now = 72 * hour
@@ -90,6 +140,9 @@ for required in (
     "weeklyTrendRatePctPerHour",
     "weeklyTrendConfidence",
     "weeklyTrendPoints",
+    "weeklyTrendProjectedUsed",
+    "weeklyHabitWeights",
+    "夜间和历史空闲时段不会沿用白天速率",
     "private func setWeeklyForecastItem",
     "等待新周数据",
     "WeeklyForecastClock.isExpired",

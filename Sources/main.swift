@@ -255,6 +255,9 @@ private struct WeeklyTrendCalculation {
     let confidence: String
     let spanHours: Double
     let points: [WeeklyTrendPoint]
+    let projectedUsed: Double?
+    let exhaustAt: Double?
+    let model: String
 }
 
 private enum WeeklyTrendCalculator {
@@ -263,12 +266,16 @@ private enum WeeklyTrendCalculator {
         sourceReset: Int?,
         targetReset: Int?,
         timestamp: String?,
-        currentUsed: Double?
+        currentUsed: Double?,
+        habitWeights: [Double]? = nil,
+        habitTimeZoneOffsetSeconds: Int? = nil,
+        habitSampleDays: Int? = nil,
+        habitSampleBuckets: Int? = nil
     ) -> WeeklyTrendCalculation {
         guard let targetReset,
               let currentUsed,
               let now = parseTimestamp(timestamp) else {
-            return WeeklyTrendCalculation(rate: nil, confidence: "low", spanHours: 0, points: [])
+            return emptyCalculation()
         }
 
         let resetAt = TimeInterval(targetReset)
@@ -276,7 +283,7 @@ private enum WeeklyTrendCalculator {
         let weekSeconds: TimeInterval = 7 * 24 * 3600
         let startAt = resetAt - weekSeconds
         guard nowAt >= startAt, nowAt <= resetAt + 300 else {
-            return WeeklyTrendCalculation(rate: nil, confidence: "low", spanHours: 0, points: [])
+            return emptyCalculation()
         }
 
         let sameWindow = sourceReset.map { abs($0 - targetReset) <= 300 } ?? false
@@ -300,21 +307,9 @@ private enum WeeklyTrendCalculator {
         }
 
         let elapsedHours = max((nowAt - startAt) / 3600, 1 / 60)
-        let baseRate = clampedUsed / elapsedHours
-        var rate = baseRate
         let target = nowAt - 24 * 3600
         let chartSource = [WeeklyTrendPoint(timestamp: startAt, used: 0)] + observed
         let anchor = chartSource.last(where: { $0.timestamp <= target }) ?? chartSource.first
-        if let anchor {
-            let coverageHours = (nowAt - anchor.timestamp) / 3600
-            if coverageHours >= 6 {
-                var recentRate = max(0, (clampedUsed - anchor.used) / coverageHours)
-                let recentCap = max(baseRate * 2.5, baseRate + 0.25)
-                recentRate = min(recentRate, recentCap)
-                let recentWeight = 0.35 * min(1, coverageHours / 24)
-                rate = baseRate * (1 - recentWeight) + recentRate * recentWeight
-            }
-        }
 
         let realObserved = observed.filter { $0.timestamp > startAt + 300 }
         let spanHours: Double
@@ -324,8 +319,14 @@ private enum WeeklyTrendCalculator {
             spanHours = 0
         }
         let changes = zip(realObserved, realObserved.dropFirst()).filter { $0.used < $1.used }.count
+        let historyDays = max(0, habitSampleDays ?? 0)
+        let historyBuckets = max(0, habitSampleBuckets ?? 0)
         let confidence: String
-        if spanHours >= 48, changes >= 5 {
+        if historyDays >= 18, historyBuckets >= 48, spanHours >= 24, changes >= 3 {
+            confidence = "high"
+        } else if historyDays >= 7, historyBuckets >= 20, changes >= 2 {
+            confidence = "medium"
+        } else if spanHours >= 48, changes >= 5 {
             confidence = "high"
         } else if spanHours >= 24, changes >= 3 {
             confidence = "medium"
@@ -340,12 +341,167 @@ private enum WeeklyTrendCalculator {
         if displayPoints.last?.timestamp != nowAt || displayPoints.last?.used != clampedUsed {
             displayPoints.append(WeeklyTrendPoint(timestamp: nowAt, used: clampedUsed))
         }
+
+        let offsetSeconds = habitTimeZoneOffsetSeconds ?? 0
+        let usableHabitWeights: [Double]?
+        if let habitWeights,
+           habitWeights.count == 168,
+           habitWeights.contains(where: { $0.isFinite && $0 > 0 }) {
+            usableHabitWeights = habitWeights.map { $0.isFinite ? max(0, $0) : 0 }
+        } else {
+            usableHabitWeights = nil
+        }
+
+        let rate: Double
+        let projectedUsed: Double
+        let exhaustAt: Double?
+        let model: String
+        if let weights = usableHabitWeights {
+            let elapsedWeight = max(
+                habitWeight(
+                    from: startAt,
+                    to: nowAt,
+                    weights: weights,
+                    timeZoneOffsetSeconds: offsetSeconds
+                ),
+                1 / 60
+            )
+            let baseHabitRate = clampedUsed / elapsedWeight
+            var habitRate = baseHabitRate
+            if let anchor {
+                let coverageHours = (nowAt - anchor.timestamp) / 3600
+                let recentHabitWeight = habitWeight(
+                    from: anchor.timestamp,
+                    to: nowAt,
+                    weights: weights,
+                    timeZoneOffsetSeconds: offsetSeconds
+                )
+                if coverageHours >= 6, recentHabitWeight >= 1 {
+                    var recentRate = max(0, (clampedUsed - anchor.used) / recentHabitWeight)
+                    let recentCap = max(baseHabitRate * 2.5, baseHabitRate + 0.25)
+                    recentRate = min(recentRate, recentCap)
+                    let recentWeight = 0.35 * min(1, coverageHours / 24)
+                    habitRate = baseHabitRate * (1 - recentWeight) + recentRate * recentWeight
+                }
+            }
+            let futureWeight = habitWeight(
+                from: nowAt,
+                to: resetAt,
+                weights: weights,
+                timeZoneOffsetSeconds: offsetSeconds
+            )
+            projectedUsed = clampedUsed + habitRate * futureWeight
+            let remainingHours = max(0, (resetAt - nowAt) / 3600)
+            rate = remainingHours > 0 ? max(0, projectedUsed - clampedUsed) / remainingHours : 0
+            if projectedUsed >= 100, habitRate > 0 {
+                exhaustAt = habitExhaustTimestamp(
+                    from: nowAt,
+                    to: resetAt,
+                    requiredWeight: max(0, (100 - clampedUsed) / habitRate),
+                    weights: weights,
+                    timeZoneOffsetSeconds: offsetSeconds
+                )
+            } else {
+                exhaustAt = nil
+            }
+            model = "habit"
+        } else {
+            let baseRate = clampedUsed / elapsedHours
+            var wallClockRate = baseRate
+            if let anchor {
+                let coverageHours = (nowAt - anchor.timestamp) / 3600
+                if coverageHours >= 6 {
+                    var recentRate = max(0, (clampedUsed - anchor.used) / coverageHours)
+                    let recentCap = max(baseRate * 2.5, baseRate + 0.25)
+                    recentRate = min(recentRate, recentCap)
+                    let recentWeight = 0.35 * min(1, coverageHours / 24)
+                    wallClockRate = baseRate * (1 - recentWeight) + recentRate * recentWeight
+                }
+            }
+            rate = wallClockRate
+            let remainingHours = max(0, (resetAt - nowAt) / 3600)
+            projectedUsed = clampedUsed + wallClockRate * remainingHours
+            exhaustAt = projectedUsed >= 100 && wallClockRate > 0
+                ? nowAt + max(0, (100 - clampedUsed) / wallClockRate) * 3600
+                : nil
+            model = "elapsed"
+        }
+
         return WeeklyTrendCalculation(
             rate: rate,
             confidence: confidence,
             spanHours: spanHours,
-            points: displayPoints
+            points: displayPoints,
+            projectedUsed: projectedUsed,
+            exhaustAt: exhaustAt,
+            model: model
         )
+    }
+
+    private static func emptyCalculation() -> WeeklyTrendCalculation {
+        WeeklyTrendCalculation(
+            rate: nil,
+            confidence: "low",
+            spanHours: 0,
+            points: [],
+            projectedUsed: nil,
+            exhaustAt: nil,
+            model: "elapsed"
+        )
+    }
+
+    private static func habitHourIndex(_ timestamp: Double, timeZoneOffsetSeconds: Int) -> Int {
+        let localHours = Int(floor((timestamp + Double(timeZoneOffsetSeconds)) / 3600))
+        let localDays = Int(floor(Double(localHours) / 24))
+        let hour = ((localHours % 24) + 24) % 24
+        let weekday = ((localDays + 3) % 7 + 7) % 7
+        return weekday * 24 + hour
+    }
+
+    private static func habitWeight(
+        from start: Double,
+        to end: Double,
+        weights: [Double],
+        timeZoneOffsetSeconds: Int
+    ) -> Double {
+        guard end > start, weights.count == 168 else { return 0 }
+        var cursor = start
+        var total = 0.0
+        while cursor < end {
+            let localHour = floor((cursor + Double(timeZoneOffsetSeconds)) / 3600)
+            let nextBoundary = (localHour + 1) * 3600 - Double(timeZoneOffsetSeconds)
+            let segmentEnd = min(end, max(cursor + 1, nextBoundary))
+            let durationHours = (segmentEnd - cursor) / 3600
+            total += durationHours * weights[habitHourIndex(cursor, timeZoneOffsetSeconds: timeZoneOffsetSeconds)]
+            cursor = segmentEnd
+        }
+        return total
+    }
+
+    private static func habitExhaustTimestamp(
+        from start: Double,
+        to end: Double,
+        requiredWeight: Double,
+        weights: [Double],
+        timeZoneOffsetSeconds: Int
+    ) -> Double? {
+        guard requiredWeight > 0, end > start, weights.count == 168 else { return start }
+        var remaining = requiredWeight
+        var cursor = start
+        while cursor < end {
+            let localHour = floor((cursor + Double(timeZoneOffsetSeconds)) / 3600)
+            let nextBoundary = (localHour + 1) * 3600 - Double(timeZoneOffsetSeconds)
+            let segmentEnd = min(end, max(cursor + 1, nextBoundary))
+            let weight = weights[habitHourIndex(cursor, timeZoneOffsetSeconds: timeZoneOffsetSeconds)]
+            let segmentHours = (segmentEnd - cursor) / 3600
+            let available = segmentHours * weight
+            if weight > 0, remaining <= available {
+                return cursor + remaining / weight * 3600
+            }
+            remaining -= available
+            cursor = segmentEnd
+        }
+        return nil
     }
 
     private static func parseTimestamp(_ timestamp: String?) -> Date? {
@@ -585,6 +741,13 @@ struct QuotaInfo: Decodable {
     let weeklyTrendConfidence: String?
     let weeklyTrendSpanHours: Double?
     let weeklyTrendPoints: [WeeklyTrendPoint]?
+    let weeklyTrendProjectedUsed: Double?
+    let weeklyTrendExhaustAt: Double?
+    let weeklyTrendModel: String?
+    let weeklyHabitWeights: [Double]?
+    let weeklyHabitTimeZoneOffsetSeconds: Int?
+    let weeklyHabitSampleDays: Int?
+    let weeklyHabitSampleBuckets: Int?
     let topThread: String?
     let topThreadTokens: Int?
     let activeThreads: Int?
@@ -596,7 +759,11 @@ struct QuotaInfo: Decodable {
             sourceReset: secondaryReset,
             targetReset: quota.secondaryReset,
             timestamp: quota.timestamp,
-            currentUsed: quota.secondaryUsed
+            currentUsed: quota.secondaryUsed,
+            habitWeights: weeklyHabitWeights,
+            habitTimeZoneOffsetSeconds: weeklyHabitTimeZoneOffsetSeconds,
+            habitSampleDays: weeklyHabitSampleDays,
+            habitSampleBuckets: weeklyHabitSampleBuckets
         )
         return QuotaInfo(
             ok: quota.ok,
@@ -622,6 +789,13 @@ struct QuotaInfo: Decodable {
             weeklyTrendConfidence: mergedTrend.confidence,
             weeklyTrendSpanHours: mergedTrend.spanHours,
             weeklyTrendPoints: mergedTrend.points,
+            weeklyTrendProjectedUsed: mergedTrend.projectedUsed,
+            weeklyTrendExhaustAt: mergedTrend.exhaustAt,
+            weeklyTrendModel: mergedTrend.model,
+            weeklyHabitWeights: weeklyHabitWeights,
+            weeklyHabitTimeZoneOffsetSeconds: weeklyHabitTimeZoneOffsetSeconds,
+            weeklyHabitSampleDays: weeklyHabitSampleDays,
+            weeklyHabitSampleBuckets: weeklyHabitSampleBuckets,
             topThread: topThread,
             topThreadTokens: topThreadTokens,
             activeThreads: activeThreads,
@@ -1010,7 +1184,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             spanText = String(format: "%.0fh", spanHours)
         }
-        let confidence = spanHours > 0 ? "\(confidenceName) · \(spanText)" : confidenceName
+        let habitDays = max(0, info.weeklyHabitSampleDays ?? 0)
+        let usesHabitModel = info.weeklyTrendModel == "habit" && habitDays > 0
+        let confidence: String
+        if usesHabitModel {
+            let shortConfidence: String
+            switch info.weeklyTrendConfidence {
+            case "high": shortConfidence = t("高", "high")
+            case "medium": shortConfidence = t("中", "med")
+            default: shortConfidence = t("低", "low")
+            }
+            confidence = t(
+                "\(shortConfidence) · 历史\(habitDays)d",
+                "\(shortConfidence) · \(habitDays)d"
+            )
+        } else {
+            confidence = spanHours > 0 ? "\(confidenceName) · \(spanText)" : confidenceName
+        }
+        let habitHint = usesHabitModel
+            ? t(
+                "预测按近 \(habitDays) 天本机活跃时段加权，夜间和历史空闲时段不会沿用白天速率。",
+                "The forecast weights the last \(habitDays) days of local active hours, so nights and historically idle periods do not continue the daytime rate."
+            )
+            : ""
 
         guard let rate = info.weeklyTrendRatePctPerHour,
               rate.isFinite,
@@ -1029,19 +1225,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 resetCreditMarker: resetCreditMarker,
                 tone: .secondaryLabelColor,
                 tooltip: t(
-                    "\(summary)。实线为实际消耗，灰线为均匀预算线\(markerHint)。",
-                    "\(summary). Solid is actual usage; gray is the even-budget line\(markerHint)."
+                    "\(summary)。\(habitHint)实线为实际消耗，灰线为均匀预算线\(markerHint)。",
+                    "\(summary). \(habitHint) Solid is actual usage; gray is the even-budget line\(markerHint)."
                 )
             )
         }
 
         let remainingHours = max(0, resetAt.timeIntervalSince(now) / 3600)
-        let projectedUsed = used + rate * remainingHours
+        let projectedUsed = info.weeklyTrendProjectedUsed.flatMap { $0.isFinite ? $0 : nil }
+            ?? (used + rate * remainingHours)
         let summary: String
         let forecastPoint: CGPoint
         let tone: NSColor
         if projectedUsed >= 100 {
-            let hoursToExhaust = max(0, (100 - used) / rate)
+            let fallbackExhaustAt = now.addingTimeInterval(max(0, (100 - used) / rate) * 3600)
+            let exhaustAt: Date
+            if let rawExhaustAt = info.weeklyTrendExhaustAt,
+               rawExhaustAt.isFinite {
+                let candidate = Date(timeIntervalSince1970: rawExhaustAt)
+                exhaustAt = min(resetAt, max(now, candidate))
+            } else {
+                exhaustAt = min(resetAt, fallbackExhaustAt)
+            }
+            let hoursToExhaust = max(0, exhaustAt.timeIntervalSince(now) / 3600)
             let earlyHours = max(0, remainingHours - hoursToExhaust)
             let earlyText: String
             if earlyHours >= 24 {
@@ -1054,7 +1260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     : String(format: "%.0f hours", earlyHours)
             }
             summary = t("预计提前 \(earlyText) 用完", "Runs out \(earlyText) early")
-            let exhaustProgress = min(1, nowProgress + CGFloat(hoursToExhaust / (7 * 24)))
+            let exhaustProgress = min(1, max(0, exhaustAt.timeIntervalSince(startAt) / weekSeconds))
             forecastPoint = CGPoint(x: exhaustProgress, y: 1)
             tone = .systemRed
         } else {
@@ -1070,8 +1276,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             t("，竖线标记\($0.label)", "; vertical marker: \($0.label)")
         } ?? ""
         let tooltip = t(
-            "\(summary)，\(confidence)。实线为实际消耗，彩色虚线为预测，灰线为均匀预算\(markerHint)。",
-            "\(summary), \(confidence). Solid is actual usage, colored dash is forecast, gray is the even-budget line\(markerHint)."
+            "\(summary)，\(confidence)。\(habitHint)实线为实际消耗，彩色虚线为预测，灰线为均匀预算\(markerHint)。",
+            "\(summary), \(confidence). \(habitHint) Solid is actual usage, colored dash is forecast, gray is the even-budget line\(markerHint)."
         )
         return WeeklyForecastPresentation(
             summary: summary,
@@ -1462,6 +1668,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 weeklyTrendConfidence: nil,
                 weeklyTrendSpanHours: nil,
                 weeklyTrendPoints: nil,
+                weeklyTrendProjectedUsed: nil,
+                weeklyTrendExhaustAt: nil,
+                weeklyTrendModel: nil,
+                weeklyHabitWeights: nil,
+                weeklyHabitTimeZoneOffsetSeconds: nil,
+                weeklyHabitSampleDays: nil,
+                weeklyHabitSampleBuckets: nil,
                 topThread: nil,
                 topThreadTokens: nil,
                 activeThreads: nil,
@@ -1818,12 +2031,129 @@ def prefer_monotonic_quota_values(latest, snapshots):
         latest[used_key] = best.get(used_key)
     return latest
 
-def build_weekly_trend(points, reset_at, now_at, current_used):
+def habit_hour_index(timestamp, offset_seconds):
+    local_hours = int((float(timestamp) + int(offset_seconds)) // 3600)
+    local_days = local_hours // 24
+    hour = local_hours % 24
+    weekday = (local_days + 3) % 7
+    return weekday * 24 + hour
+
+def habit_weight_between(start_at, end_at, weights, offset_seconds):
+    if not isinstance(weights, list) or len(weights) != 168 or end_at <= start_at:
+        return 0.0
+    cursor = float(start_at)
+    end_at = float(end_at)
+    total = 0.0
+    while cursor < end_at:
+        local_hour = int((cursor + int(offset_seconds)) // 3600)
+        next_boundary = (local_hour + 1) * 3600 - int(offset_seconds)
+        segment_end = min(end_at, max(cursor + 0.001, float(next_boundary)))
+        weight = max(0.0, float(weights[habit_hour_index(cursor, offset_seconds)]))
+        total += (segment_end - cursor) / 3600 * weight
+        cursor = segment_end
+    return total
+
+def habit_exhaust_at(start_at, end_at, required_weight, weights, offset_seconds):
+    if required_weight <= 0:
+        return float(start_at)
+    cursor = float(start_at)
+    end_at = float(end_at)
+    remaining = float(required_weight)
+    while cursor < end_at:
+        local_hour = int((cursor + int(offset_seconds)) // 3600)
+        next_boundary = (local_hour + 1) * 3600 - int(offset_seconds)
+        segment_end = min(end_at, max(cursor + 0.001, float(next_boundary)))
+        weight = max(0.0, float(weights[habit_hour_index(cursor, offset_seconds)]))
+        available = (segment_end - cursor) / 3600 * weight
+        if weight > 0 and remaining <= available:
+            return cursor + remaining / weight * 3600
+        remaining -= available
+        cursor = segment_end
+    return None
+
+def build_habit_profile(active_buckets, window_start_at, lookback_days=28):
+    empty = {
+        "weights": [],
+        "timeZoneOffsetSeconds": int(tz.utcoffset(None).total_seconds()),
+        "sampleDays": 0,
+        "sampleBuckets": 0,
+    }
+    try:
+        window_start_at = float(window_start_at)
+    except (TypeError, ValueError):
+        return empty
+
+    end_date = datetime.fromtimestamp(window_start_at, tz).date()
+    start_date = end_date - timedelta(days=lookback_days)
+    weekday_occurrences = Counter()
+    cursor_date = start_date
+    while cursor_date < end_date:
+        weekday_occurrences[cursor_date.weekday()] += 1
+        cursor_date += timedelta(days=1)
+
+    counts = [0.0] * 168
+    sample_dates = set()
+    accepted = set()
+    for raw_timestamp in active_buckets:
+        try:
+            timestamp = int(float(raw_timestamp) // 900) * 900
+            value = datetime.fromtimestamp(timestamp, tz)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (start_date <= value.date() < end_date):
+            continue
+        if timestamp in accepted:
+            continue
+        accepted.add(timestamp)
+        sample_dates.add(value.date())
+        counts[value.weekday() * 24 + value.hour] += 1
+
+    if len(sample_dates) < 3 or len(accepted) < 12:
+        return empty
+
+    raw_weights = []
+    for index, count in enumerate(counts):
+        occurrences = max(1, weekday_occurrences[index // 24])
+        raw_weights.append(min(1.0, count / (occurrences * 4)))
+    hour_means = [
+        sum(raw_weights[weekday * 24 + hour] for weekday in range(7)) / 7
+        for hour in range(24)
+    ]
+    global_mean = sum(raw_weights) / len(raw_weights)
+    smoothed = [
+        0.72 * raw_weights[index]
+        + 0.23 * hour_means[index % 24]
+        + 0.05 * global_mean
+        for index in range(168)
+    ]
+    mean_weight = sum(smoothed) / len(smoothed)
+    if mean_weight <= 0:
+        return empty
+    return {
+        "weights": [weight / mean_weight for weight in smoothed],
+        "timeZoneOffsetSeconds": empty["timeZoneOffsetSeconds"],
+        "sampleDays": len(sample_dates),
+        "sampleBuckets": len(accepted),
+    }
+
+def build_weekly_trend(
+    points,
+    reset_at,
+    now_at,
+    current_used,
+    habit_weights=None,
+    habit_offset_seconds=0,
+    habit_sample_days=0,
+    habit_sample_buckets=0,
+):
     empty = {
         "rate": None,
         "confidence": "low",
         "spanHours": 0.0,
         "points": [],
+        "projectedUsed": None,
+        "exhaustAt": None,
+        "model": "elapsed",
     }
     try:
         reset_at = float(reset_at)
@@ -1860,28 +2190,20 @@ def build_weekly_trend(points, reset_at, now_at, current_used):
         highest = max(highest, used)
         observed.append((float(timestamp), highest))
 
-    elapsed_hours = max((now_at - start_at) / 3600, 1 / 60)
-    base_rate = current_used / elapsed_hours
-    rate = base_rate
-
     chart_source = [(start_at, 0.0)] + observed
     target = now_at - 24 * 3600
     earlier = [item for item in chart_source if item[0] <= target]
     anchor = earlier[-1] if earlier else (chart_source[0] if chart_source else None)
-    if anchor is not None:
-        coverage_hours = (now_at - anchor[0]) / 3600
-        if coverage_hours >= 6:
-            recent_rate = max(0.0, (current_used - anchor[1]) / coverage_hours)
-            recent_cap = max(base_rate * 2.5, base_rate + 0.25)
-            recent_rate = min(recent_rate, recent_cap)
-            recent_weight = 0.35 * min(1.0, coverage_hours / 24)
-            rate = base_rate * (1 - recent_weight) + recent_rate * recent_weight
 
     span_hours = 0.0
     if len(observed) >= 2:
         span_hours = max(0.0, (observed[-1][0] - observed[0][0]) / 3600)
     changes = sum(a[1] < b[1] for a, b in zip(observed, observed[1:]))
-    if span_hours >= 48 and changes >= 5:
+    if habit_sample_days >= 18 and habit_sample_buckets >= 48 and span_hours >= 24 and changes >= 3:
+        confidence = "high"
+    elif habit_sample_days >= 7 and habit_sample_buckets >= 20 and changes >= 2:
+        confidence = "medium"
+    elif span_hours >= 48 and changes >= 5:
         confidence = "high"
     elif span_hours >= 24 and changes >= 3:
         confidence = "medium"
@@ -1899,10 +2221,73 @@ def build_weekly_trend(points, reset_at, now_at, current_used):
         indices = sorted(set(round(index * last / 47) for index in range(48)))
         display_points = [display_points[index] for index in indices]
 
+    usable_habit = (
+        isinstance(habit_weights, list)
+        and len(habit_weights) == 168
+        and any(isinstance(value, (int, float)) and value > 0 for value in habit_weights)
+    )
+    remaining_hours = max(0.0, (reset_at - now_at) / 3600)
+    if usable_habit:
+        weights = [max(0.0, float(value)) for value in habit_weights]
+        elapsed_weight = max(
+            habit_weight_between(start_at, now_at, weights, habit_offset_seconds),
+            1 / 60,
+        )
+        base_habit_rate = current_used / elapsed_weight
+        habit_rate = base_habit_rate
+        if anchor is not None:
+            coverage_hours = (now_at - anchor[0]) / 3600
+            recent_habit_weight = habit_weight_between(
+                anchor[0], now_at, weights, habit_offset_seconds
+            )
+            if coverage_hours >= 6 and recent_habit_weight >= 1:
+                recent_rate = max(0.0, (current_used - anchor[1]) / recent_habit_weight)
+                recent_cap = max(base_habit_rate * 2.5, base_habit_rate + 0.25)
+                recent_rate = min(recent_rate, recent_cap)
+                recent_weight = 0.35 * min(1.0, coverage_hours / 24)
+                habit_rate = base_habit_rate * (1 - recent_weight) + recent_rate * recent_weight
+        future_weight = habit_weight_between(now_at, reset_at, weights, habit_offset_seconds)
+        projected_used = current_used + habit_rate * future_weight
+        rate = max(0.0, projected_used - current_used) / remaining_hours if remaining_hours > 0 else 0.0
+        exhaust_at = (
+            habit_exhaust_at(
+                now_at,
+                reset_at,
+                max(0.0, (100 - current_used) / habit_rate),
+                weights,
+                habit_offset_seconds,
+            )
+            if projected_used >= 100 and habit_rate > 0
+            else None
+        )
+        model = "habit"
+    else:
+        elapsed_hours = max((now_at - start_at) / 3600, 1 / 60)
+        base_rate = current_used / elapsed_hours
+        rate = base_rate
+        if anchor is not None:
+            coverage_hours = (now_at - anchor[0]) / 3600
+            if coverage_hours >= 6:
+                recent_rate = max(0.0, (current_used - anchor[1]) / coverage_hours)
+                recent_cap = max(base_rate * 2.5, base_rate + 0.25)
+                recent_rate = min(recent_rate, recent_cap)
+                recent_weight = 0.35 * min(1.0, coverage_hours / 24)
+                rate = base_rate * (1 - recent_weight) + recent_rate * recent_weight
+        projected_used = current_used + rate * remaining_hours
+        exhaust_at = (
+            now_at + max(0.0, (100 - current_used) / rate) * 3600
+            if projected_used >= 100 and rate > 0
+            else None
+        )
+        model = "elapsed"
+
     return {
         "rate": rate,
         "confidence": confidence,
         "spanHours": span_hours,
+        "projectedUsed": projected_used,
+        "exhaustAt": exhaust_at,
+        "model": model,
         "points": [
             {"timestamp": float(timestamp), "used": float(used)}
             for timestamp, used in display_points
@@ -1936,7 +2321,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.41"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.42"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -2027,6 +2412,13 @@ def empty_stats_out(snapshot):
         "weeklyTrendConfidence": "low",
         "weeklyTrendSpanHours": 0.0,
         "weeklyTrendPoints": [],
+        "weeklyTrendProjectedUsed": None,
+        "weeklyTrendExhaustAt": None,
+        "weeklyTrendModel": None,
+        "weeklyHabitWeights": [],
+        "weeklyHabitTimeZoneOffsetSeconds": int(tz.utcoffset(None).total_seconds()),
+        "weeklyHabitSampleDays": 0,
+        "weeklyHabitSampleBuckets": 0,
         "topThread": None,
         "topThreadTokens": None,
         "activeThreads": 0,
@@ -2133,18 +2525,49 @@ if not db_path.exists():
 
 last_db_error = None
 rows = None
+thread_activity_endpoints = []
 for attempt in range(6):
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
-        rows = con.execute(
+        raw_rows = con.execute(
             """
-            SELECT id, rollout_path, title, model, reasoning_effort
+            SELECT id, rollout_path, title, model, reasoning_effort, created_at, updated_at
             FROM threads
             WHERE rollout_path IS NOT NULL
+              AND updated_at >= ?
             ORDER BY updated_at DESC
-            LIMIT 20
-            """
+            LIMIT 400
+            """,
+            ((now - timedelta(days=35)).timestamp(),),
         ).fetchall()
+        thread_activity_endpoints = [
+            timestamp
+            for row in raw_rows
+            for timestamp in (row[5], row[6])
+            if timestamp is not None
+        ]
+
+        latest_rows = raw_rows[:20]
+        rows = [tuple(row[:5]) + (1200,) for row in latest_rows]
+        selected_ids = {row[0] for row in latest_rows}
+        per_day = Counter()
+        for row in latest_rows:
+            try:
+                per_day[datetime.fromtimestamp(float(row[6]), tz).date()] += 1
+            except (TypeError, ValueError, OverflowError):
+                pass
+        for row in raw_rows[20:]:
+            if row[0] in selected_ids:
+                continue
+            try:
+                day = datetime.fromtimestamp(float(row[6]), tz).date()
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if per_day[day] >= 2:
+                continue
+            per_day[day] += 1
+            selected_ids.add(row[0])
+            rows.append(tuple(row[:5]) + (160,))
         break
     except Exception as exc:
         last_db_error = exc
@@ -2159,9 +2582,18 @@ top_by_thread = defaultdict(Counter)
 weekly_points = []
 rate_snapshots = []
 active_thread_ids = set()
+activity_buckets = set()
+activity_cutoff = (now - timedelta(days=35)).timestamp()
+for raw_timestamp in thread_activity_endpoints:
+    try:
+        timestamp = float(raw_timestamp)
+    except (TypeError, ValueError):
+        continue
+    if timestamp >= activity_cutoff:
+        activity_buckets.add(int(timestamp // 900) * 900)
 thread_names = load_thread_names(session_index_path)
 
-for thread_id, rollout_path, title, model, effort in rows:
+for thread_id, rollout_path, title, model, effort, scan_limit in rows:
     if not rollout_path:
         continue
     path = pathlib.Path(rollout_path)
@@ -2175,7 +2607,7 @@ for thread_id, rollout_path, title, model, effort in rows:
         pass
     events = []
     try:
-        for line in read_recent_json(path):
+        for line in read_recent_json(path, max_lines=scan_limit):
             try:
                 obj = json.loads(line)
             except Exception:
@@ -2186,6 +2618,8 @@ for thread_id, rollout_path, title, model, effort in rows:
             ts = parse_ts(obj.get("timestamp"))
             if not ts:
                 continue
+            if ts.timestamp() >= activity_cutoff:
+                activity_buckets.add(int(ts.timestamp() // 900) * 900)
             if ts >= now - timedelta(seconds=ACTIVE_WINDOW_SECONDS):
                 active_thread_ids.add(thread_id)
             rate_limits = payload.get("rate_limits")
@@ -2319,7 +2753,21 @@ top_thread, top_thread_tokens = today_threads[0] if today_threads else (None, No
 weekly_points.sort(key=lambda item: item[0])
 reset_at = latest.get("secondaryReset")
 used_week = latest.get("secondaryUsed")
-weekly_trend = build_weekly_trend(weekly_points, reset_at, now.timestamp(), used_week)
+try:
+    weekly_start_at = float(reset_at) - 7 * 24 * 3600
+except (TypeError, ValueError):
+    weekly_start_at = None
+habit_profile = build_habit_profile(activity_buckets, weekly_start_at)
+weekly_trend = build_weekly_trend(
+    weekly_points,
+    reset_at,
+    now.timestamp(),
+    used_week,
+    habit_weights=habit_profile.get("weights"),
+    habit_offset_seconds=habit_profile.get("timeZoneOffsetSeconds", 0),
+    habit_sample_days=habit_profile.get("sampleDays", 0),
+    habit_sample_buckets=habit_profile.get("sampleBuckets", 0),
+)
 
 out = dict(latest)
 out.pop("ts", None)
@@ -2331,6 +2779,13 @@ out.update({
     "weeklyTrendConfidence": weekly_trend.get("confidence"),
     "weeklyTrendSpanHours": weekly_trend.get("spanHours"),
     "weeklyTrendPoints": weekly_trend.get("points"),
+    "weeklyTrendProjectedUsed": weekly_trend.get("projectedUsed"),
+    "weeklyTrendExhaustAt": weekly_trend.get("exhaustAt"),
+    "weeklyTrendModel": weekly_trend.get("model"),
+    "weeklyHabitWeights": habit_profile.get("weights"),
+    "weeklyHabitTimeZoneOffsetSeconds": habit_profile.get("timeZoneOffsetSeconds"),
+    "weeklyHabitSampleDays": habit_profile.get("sampleDays"),
+    "weeklyHabitSampleBuckets": habit_profile.get("sampleBuckets"),
     "topThread": top_thread,
     "topThreadTokens": top_thread_tokens,
     "activeThreads": len(active_thread_ids),

@@ -48,6 +48,35 @@ precondition(sameWeek.points.last?.used == 40)
 let projectedAtReset = 40 + sameWeek.rate! * ((reset + 1 - now) / 3600)
 precondition(projectedAtReset > 100)
 
+var habitWeights = [Double](repeating: 0.02, count: 168)
+for weekday in 0..<5 {{
+    for hour in 8..<18 {{
+        habitWeights[weekday * 24 + hour] = 1
+    }}
+}}
+let habitNow = 5.0 * 3600
+let habitPoints = [
+    WeeklyTrendPoint(timestamp: 0, used: 0),
+    WeeklyTrendPoint(timestamp: 2 * 3600, used: 5),
+    WeeklyTrendPoint(timestamp: 4 * 3600, used: 15),
+    WeeklyTrendPoint(timestamp: habitNow, used: 20),
+]
+private let habitWeek = WeeklyTrendCalculator.merge(
+    points: habitPoints,
+    sourceReset: Int(reset),
+    targetReset: Int(reset),
+    timestamp: iso(habitNow),
+    currentUsed: 20,
+    habitWeights: habitWeights,
+    habitTimeZoneOffsetSeconds: 8 * 3600,
+    habitSampleDays: 21,
+    habitSampleBuckets: 80
+)
+precondition(habitWeek.model == "habit")
+precondition(habitWeek.confidence == "medium")
+precondition((habitWeek.projectedUsed ?? 0) > 100)
+precondition((habitWeek.exhaustAt ?? 0) > habitNow + 72 * 3600)
+
 private let acceptedBoundary = WeeklyTrendCalculator.merge(
     points: points,
     sourceReset: Int(reset),
@@ -89,6 +118,7 @@ private let newWeek = WeeklyTrendCalculator.merge(
 precondition(newWeek.confidence == "low")
 precondition(newWeek.points.count == 2)
 precondition(abs((newWeek.rate ?? 0) - (1.0 / 12.0)) < 0.001)
+precondition(newWeek.model == "elapsed")
 
 print("weekly live merge: ok")
 """

@@ -122,7 +122,7 @@ The graphical forecast row uses three trend lines plus an expiry marker:
 
 When full-reset credits are available, the menu shows their count in a separate row. Open that row to see every exact expiry date returned by the API; if the count exceeds the valid dates, the submenu says how many dates are unavailable. The nearest group that expires within the current weekly chart range is marked on the time axis with an orange vertical line and date, turning red inside 24 hours. Expiries after the weekly reset remain in the expanded list instead of stretching and distorting the forecast axis.
 
-The estimate locks samples to the current weekly reset window, collapses duplicate snapshots into 5-minute buckets, and blends the stable since-reset average with roughly the most recent 24-hour pace; when samples are sparse, that recent observation range expands. It also shows low, medium, or high confidence from the observed time span and number of real usage changes. This removes the old fixed `8h/day` assumption and makes short bursts less likely to dominate the result.
+The estimate collapses quota snapshots from the current reset window into 5-minute buckets. It also turns 15-minute local activity buckets from the previous 28 complete calendar days into a personal weekday-by-hour profile. Current burn is measured in that weighted active time and blended with roughly the latest 24-hour change, so nights and historically idle periods no longer inherit the daytime rate. The compact label includes confidence and usable history, for example `med · 28d`; if history is sparse, the model falls back to the current reset window alone.
 
 `Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails before any live quota has been cached, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp. After a live quota snapshot has been cached, a failed refresh keeps that snapshot and marks the row as `Stale` instead of replacing it with older rollout-log quota.
 
@@ -146,7 +146,7 @@ Opening the menu keeps the quota display aligned with the official panel: if the
 
 To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 5 minutes. That probe only reads local state and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active, it triggers an account-quota refresh.
 
-Automatic 5-minute refreshes only read the official account quota. The heavier local scan used for today/top/forecast statistics runs at startup, on manual refresh, and at most once per hour in the background. This keeps the quota rings current without repeatedly parsing recent thread history.
+Automatic 5-minute refreshes only read the official account quota. The detail scan used for today/top/forecast statistics runs at startup, on manual refresh, and at most once per hour in the background. It reads recent threads precisely and samples only a small number of older rollout tails per day to learn active hours without a full-history scan.
 
 You can tune the automatic intervals:
 
@@ -166,7 +166,7 @@ If Codex is temporarily writing, checkpointing, or migrating `~/.codex/state_5.s
 
 ## Accuracy
 
-This is an unofficial local dashboard. Current 5-hour and weekly quota are read from the same local Codex app-server account-rate-limit path used by the native UI. Today and top-thread statistics come from local rollout logs. The forecast combines rollout history with the latest live weekly usage when available, so its history can still lag if Codex has not flushed recent events. Forecast confidence communicates the amount of usable history; it is an estimate of the current pace, not a quota guarantee.
+This is an unofficial local dashboard. Current 5-hour and weekly quota are read from the same local Codex app-server account-rate-limit path used by the native UI. Today and top-thread statistics come from local rollout logs. The forecast keeps only bucketed activity times and quota changes in memory; it does not persist a profile of conversation text or titles. History can still lag if Codex has not flushed recent events. Forecast confidence communicates the amount of usable history; it is an estimate of the current pace, not a quota guarantee.
 
 Treat it as a fast dashboard, not an accounting source of truth.
 
