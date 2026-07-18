@@ -256,7 +256,13 @@ private struct WeeklyTrendCalculation {
     let spanHours: Double
     let points: [WeeklyTrendPoint]
     let projectedUsed: Double?
+    let projectedLowUsed: Double?
+    let projectedHighUsed: Double?
     let exhaustAt: Double?
+    let todayUsed: Double?
+    let todayBaselineUsed: Double?
+    let todayBaselineDayStart: Double?
+    let cycleAveragePctPerDay: Double?
     let model: String
 }
 
@@ -270,7 +276,13 @@ private enum WeeklyTrendCalculator {
         habitWeights: [Double]? = nil,
         habitTimeZoneOffsetSeconds: Int? = nil,
         habitSampleDays: Int? = nil,
-        habitSampleBuckets: Int? = nil
+        habitSampleBuckets: Int? = nil,
+        historicalRatePctPerHabitHour: Double? = nil,
+        historicalLowRatePctPerHabitHour: Double? = nil,
+        historicalHighRatePctPerHabitHour: Double? = nil,
+        historicalSampleCycles: Int? = nil,
+        todayBaselineUsed: Double? = nil,
+        todayBaselineDayStart: Double? = nil
     ) -> WeeklyTrendCalculation {
         guard let targetReset,
               let currentUsed,
@@ -319,12 +331,11 @@ private enum WeeklyTrendCalculator {
             spanHours = 0
         }
         let changes = zip(realObserved, realObserved.dropFirst()).filter { $0.used < $1.used }.count
-        let historyDays = max(0, habitSampleDays ?? 0)
-        let historyBuckets = max(0, habitSampleBuckets ?? 0)
+        let paceCycles = max(0, historicalSampleCycles ?? 0)
         let confidence: String
-        if historyDays >= 18, historyBuckets >= 48, spanHours >= 24, changes >= 3 {
+        if paceCycles >= 4, spanHours >= 48, changes >= 5 {
             confidence = "high"
-        } else if historyDays >= 7, historyBuckets >= 20, changes >= 2 {
+        } else if paceCycles >= 3, spanHours >= 24, changes >= 3 {
             confidence = "medium"
         } else if spanHours >= 48, changes >= 5 {
             confidence = "high"
@@ -352,8 +363,20 @@ private enum WeeklyTrendCalculator {
             usableHabitWeights = nil
         }
 
+        let usableHistoricalRate = historicalRatePctPerHabitHour.flatMap {
+            $0.isFinite && $0 > 0 && paceCycles >= 2 ? $0 : nil
+        }
+        let usableHistoricalLowRate = historicalLowRatePctPerHabitHour.flatMap {
+            $0.isFinite && $0 > 0 ? $0 : nil
+        }
+        let usableHistoricalHighRate = historicalHighRatePctPerHabitHour.flatMap {
+            $0.isFinite && $0 > 0 ? $0 : nil
+        }
+
         let rate: Double
         let projectedUsed: Double
+        let projectedLowUsed: Double
+        let projectedHighUsed: Double
         let exhaustAt: Double?
         let model: String
         if let weights = usableHabitWeights {
@@ -367,7 +390,15 @@ private enum WeeklyTrendCalculator {
                 1 / 60
             )
             let baseHabitRate = clampedUsed / elapsedWeight
-            var habitRate = baseHabitRate
+            var habitRate = usableHistoricalRate ?? baseHabitRate
+            var lowHabitRate = min(
+                usableHistoricalLowRate ?? habitRate,
+                usableHistoricalHighRate ?? habitRate
+            )
+            var highHabitRate = max(
+                usableHistoricalLowRate ?? habitRate,
+                usableHistoricalHighRate ?? habitRate
+            )
             if let anchor {
                 let coverageHours = (nowAt - anchor.timestamp) / 3600
                 let recentHabitWeight = habitWeight(
@@ -376,12 +407,21 @@ private enum WeeklyTrendCalculator {
                     weights: weights,
                     timeZoneOffsetSeconds: offsetSeconds
                 )
-                if coverageHours >= 6, recentHabitWeight >= 1 {
+                if coverageHours >= 12, recentHabitWeight >= 1 {
                     var recentRate = max(0, (clampedUsed - anchor.used) / recentHabitWeight)
-                    let recentCap = max(baseHabitRate * 2.5, baseHabitRate + 0.25)
+                    let referenceRate = usableHistoricalRate ?? baseHabitRate
+                    let referenceHigh = max(highHabitRate, referenceRate)
+                    let recentCap = max(referenceHigh * 2, referenceRate + 0.5)
                     recentRate = min(recentRate, recentCap)
-                    let recentWeight = 0.35 * min(1, coverageHours / 24)
-                    habitRate = baseHabitRate * (1 - recentWeight) + recentRate * recentWeight
+                    let recentWeight: Double
+                    if usableHistoricalRate != nil {
+                        recentWeight = min(0.45, 0.15 + 0.30 * min(1, max(0, spanHours - 12) / 36))
+                    } else {
+                        recentWeight = 0.35 * min(1, coverageHours / 24)
+                    }
+                    habitRate = habitRate * (1 - recentWeight) + recentRate * recentWeight
+                    lowHabitRate = lowHabitRate * (1 - recentWeight) + recentRate * recentWeight
+                    highHabitRate = highHabitRate * (1 - recentWeight) + recentRate * recentWeight
                 }
             }
             let futureWeight = habitWeight(
@@ -391,6 +431,8 @@ private enum WeeklyTrendCalculator {
                 timeZoneOffsetSeconds: offsetSeconds
             )
             projectedUsed = clampedUsed + habitRate * futureWeight
+            projectedLowUsed = clampedUsed + min(lowHabitRate, highHabitRate) * futureWeight
+            projectedHighUsed = clampedUsed + max(lowHabitRate, highHabitRate) * futureWeight
             let remainingHours = max(0, (resetAt - nowAt) / 3600)
             rate = remainingHours > 0 ? max(0, projectedUsed - clampedUsed) / remainingHours : 0
             if projectedUsed >= 100, habitRate > 0 {
@@ -404,7 +446,7 @@ private enum WeeklyTrendCalculator {
             } else {
                 exhaustAt = nil
             }
-            model = "habit"
+            model = usableHistoricalRate == nil ? "habit" : "habit-history"
         } else {
             let baseRate = clampedUsed / elapsedHours
             var wallClockRate = baseRate
@@ -421,20 +463,45 @@ private enum WeeklyTrendCalculator {
             rate = wallClockRate
             let remainingHours = max(0, (resetAt - nowAt) / 3600)
             projectedUsed = clampedUsed + wallClockRate * remainingHours
+            projectedLowUsed = projectedUsed
+            projectedHighUsed = projectedUsed
             exhaustAt = projectedUsed >= 100 && wallClockRate > 0
                 ? nowAt + max(0, (100 - clampedUsed) / wallClockRate) * 3600
                 : nil
             model = "elapsed"
         }
 
+        let localDayStart = floor((nowAt + Double(offsetSeconds)) / 86_400) * 86_400 - Double(offsetSeconds)
+        let usedAtDayStart: Double?
+        if startAt >= localDayStart {
+            usedAtDayStart = 0
+        } else {
+            usedAtDayStart = todayBaselineDayStart.flatMap { baselineDayStart in
+                guard sameWindow, abs(baselineDayStart - localDayStart) <= 1 else { return nil }
+                return todayBaselineUsed.flatMap {
+                    $0.isFinite ? max(0, min(clampedUsed, $0)) : nil
+                }
+            }
+        }
+        let todayUsed = usedAtDayStart.map { max(0, clampedUsed - $0) }
+        let elapsedDays = max(elapsedHours / 24, 1 / 24)
+        let cycleAveragePctPerDay = clampedUsed / elapsedDays
+        let paceIsBuilding = usableHistoricalRate == nil && (spanHours < 12 || changes < 3)
+
         return WeeklyTrendCalculation(
-            rate: rate,
+            rate: paceIsBuilding ? nil : rate,
             confidence: confidence,
             spanHours: spanHours,
             points: displayPoints,
-            projectedUsed: projectedUsed,
-            exhaustAt: exhaustAt,
-            model: model
+            projectedUsed: paceIsBuilding ? nil : projectedUsed,
+            projectedLowUsed: paceIsBuilding ? nil : projectedLowUsed,
+            projectedHighUsed: paceIsBuilding ? nil : projectedHighUsed,
+            exhaustAt: paceIsBuilding ? nil : exhaustAt,
+            todayUsed: todayUsed,
+            todayBaselineUsed: usedAtDayStart,
+            todayBaselineDayStart: usedAtDayStart == nil ? nil : localDayStart,
+            cycleAveragePctPerDay: cycleAveragePctPerDay,
+            model: paceIsBuilding ? "building" : model
         )
     }
 
@@ -445,7 +512,13 @@ private enum WeeklyTrendCalculator {
             spanHours: 0,
             points: [],
             projectedUsed: nil,
+            projectedLowUsed: nil,
+            projectedHighUsed: nil,
             exhaustAt: nil,
+            todayUsed: nil,
+            todayBaselineUsed: nil,
+            todayBaselineDayStart: nil,
+            cycleAveragePctPerDay: nil,
             model: "elapsed"
         )
     }
@@ -592,6 +665,12 @@ private struct WeeklyForecastPresentation {
     let forecastPoint: CGPoint?
     let resetCreditMarker: ResetCreditExpiryMarker?
     let tone: NSColor
+    let tooltip: String
+}
+
+private struct QuotaBurnPresentation {
+    let value: String
+    let detail: String
     let tooltip: String
 }
 
@@ -742,12 +821,22 @@ struct QuotaInfo: Decodable {
     let weeklyTrendSpanHours: Double?
     let weeklyTrendPoints: [WeeklyTrendPoint]?
     let weeklyTrendProjectedUsed: Double?
+    let weeklyTrendProjectedLowUsed: Double?
+    let weeklyTrendProjectedHighUsed: Double?
     let weeklyTrendExhaustAt: Double?
     let weeklyTrendModel: String?
+    let weeklyTodayUsed: Double?
+    let weeklyTodayBaselineUsed: Double?
+    let weeklyTodayBaselineDayStart: Double?
+    let weeklyCycleAveragePctPerDay: Double?
     let weeklyHabitWeights: [Double]?
     let weeklyHabitTimeZoneOffsetSeconds: Int?
     let weeklyHabitSampleDays: Int?
     let weeklyHabitSampleBuckets: Int?
+    let weeklyHistoricalRatePctPerHabitHour: Double?
+    let weeklyHistoricalLowRatePctPerHabitHour: Double?
+    let weeklyHistoricalHighRatePctPerHabitHour: Double?
+    let weeklyHistoricalSampleCycles: Int?
     let topThread: String?
     let topThreadTokens: Int?
     let activeThreads: Int?
@@ -763,7 +852,13 @@ struct QuotaInfo: Decodable {
             habitWeights: weeklyHabitWeights,
             habitTimeZoneOffsetSeconds: weeklyHabitTimeZoneOffsetSeconds,
             habitSampleDays: weeklyHabitSampleDays,
-            habitSampleBuckets: weeklyHabitSampleBuckets
+            habitSampleBuckets: weeklyHabitSampleBuckets,
+            historicalRatePctPerHabitHour: weeklyHistoricalRatePctPerHabitHour,
+            historicalLowRatePctPerHabitHour: weeklyHistoricalLowRatePctPerHabitHour,
+            historicalHighRatePctPerHabitHour: weeklyHistoricalHighRatePctPerHabitHour,
+            historicalSampleCycles: weeklyHistoricalSampleCycles,
+            todayBaselineUsed: weeklyTodayBaselineUsed,
+            todayBaselineDayStart: weeklyTodayBaselineDayStart
         )
         return QuotaInfo(
             ok: quota.ok,
@@ -790,12 +885,22 @@ struct QuotaInfo: Decodable {
             weeklyTrendSpanHours: mergedTrend.spanHours,
             weeklyTrendPoints: mergedTrend.points,
             weeklyTrendProjectedUsed: mergedTrend.projectedUsed,
+            weeklyTrendProjectedLowUsed: mergedTrend.projectedLowUsed,
+            weeklyTrendProjectedHighUsed: mergedTrend.projectedHighUsed,
             weeklyTrendExhaustAt: mergedTrend.exhaustAt,
             weeklyTrendModel: mergedTrend.model,
+            weeklyTodayUsed: mergedTrend.todayUsed,
+            weeklyTodayBaselineUsed: mergedTrend.todayBaselineUsed,
+            weeklyTodayBaselineDayStart: mergedTrend.todayBaselineDayStart,
+            weeklyCycleAveragePctPerDay: mergedTrend.cycleAveragePctPerDay,
             weeklyHabitWeights: weeklyHabitWeights,
             weeklyHabitTimeZoneOffsetSeconds: weeklyHabitTimeZoneOffsetSeconds,
             weeklyHabitSampleDays: weeklyHabitSampleDays,
             weeklyHabitSampleBuckets: weeklyHabitSampleBuckets,
+            weeklyHistoricalRatePctPerHabitHour: weeklyHistoricalRatePctPerHabitHour,
+            weeklyHistoricalLowRatePctPerHabitHour: weeklyHistoricalLowRatePctPerHabitHour,
+            weeklyHistoricalHighRatePctPerHabitHour: weeklyHistoricalHighRatePctPerHabitHour,
+            weeklyHistoricalSampleCycles: weeklyHistoricalSampleCycles,
             topThread: topThread,
             topThreadTokens: topThreadTokens,
             activeThreads: activeThreads,
@@ -835,6 +940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let weekItem = NSMenuItem(title: "1w -", action: nil, keyEquivalent: "")
     private let resetCreditsItem = NSMenuItem(title: "Resets -", action: nil, keyEquivalent: "")
     private let todayItem = NSMenuItem(title: "Today -", action: nil, keyEquivalent: "")
+    private let quotaBurnItem = NSMenuItem(title: "Quota burn -", action: nil, keyEquivalent: "")
     private let forecastItem = NSMenuItem(title: "Forecast -", action: nil, keyEquivalent: "")
     private let topItem = NSMenuItem(title: "Top -", action: nil, keyEquivalent: "")
     private let activityItem = NSMenuItem(title: "Activity -", action: nil, keyEquivalent: "")
@@ -879,6 +985,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(weekItem)
         menu.addItem(resetCreditsItem)
         menu.addItem(todayItem)
+        menu.addItem(quotaBurnItem)
         menu.addItem(forecastItem)
         menu.addItem(topItem)
         menu.addItem(activityItem)
@@ -920,6 +1027,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "-")
             setResetCreditsItem(count: nil, expirations: [])
             setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
+            setInfoItem(quotaBurnItem, label: t("额度油耗", "Quota burn"), value: "-")
             setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
             setInfoItem(topItem, label: "Top", value: "-")
             setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
@@ -1037,10 +1145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             iconView.needsDisplay = true
             fiveHourItem.isHidden = false
             weekItem.isHidden = true
+            quotaBurnItem.isHidden = true
             forecastItem.isHidden = false
             setInfoItem(fiveHourItem, label: t("错误", "Error"), value: message)
             setResetCreditsItem(count: nil, expirations: [])
             setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
+            setInfoItem(quotaBurnItem, label: t("额度油耗", "Quota burn"), value: "-")
             setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
             setInfoItem(topItem, label: "Top", value: "-")
             setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
@@ -1062,6 +1172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let primaryReset = formatReset(info.primaryReset)
         let secondaryReset = formatReset(info.secondaryReset)
         let today = info.todayTokens.map { Self.formatCompact($0) } ?? "-"
+        let quotaBurn = makeQuotaBurnPresentation(info)
         let weeklyForecast = makeWeeklyForecastPresentation(info)
         let topThread = info.topThread ?? "-"
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
@@ -1082,6 +1193,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } ?? (useChinese ? "可用重置: \(resetCredits)" : "Resets available: \(resetCredits)")
         detailLines.append(resetCreditsDetail)
         detailLines.append(useChinese ? "今日: \(today)" : "Today: \(today)")
+        detailLines.append(useChinese
+            ? "额度油耗: \(quotaBurn.value)  \(quotaBurn.detail)"
+            : "Quota burn: \(quotaBurn.value)  \(quotaBurn.detail)")
         detailLines.append(useChinese ? "周预测: \(weeklyForecast.summary)  \(weeklyForecast.confidence)" : "Weekly forecast: \(weeklyForecast.summary)  \(weeklyForecast.confidence)")
         detailLines.append("Top: \(topThread)  \(topThreadTokens)")
         detailLines.append(useChinese ? "后台活动: \(activity)" : "Activity: \(activity)")
@@ -1090,6 +1204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         fiveHourItem.isHidden = fiveHour == nil
         weekItem.isHidden = week == nil
+        quotaBurnItem.isHidden = week == nil
         forecastItem.isHidden = week == nil
         if let fiveHour {
             setInfoItem(fiveHourItem, label: t("5小时剩余", "5h left"), value: "\(fiveHour)%", detail: primaryReset)
@@ -1099,6 +1214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         setResetCreditsItem(count: availableResetCredits, expirations: resetCreditExpirations)
         setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today)
+        setQuotaBurnItem(quotaBurnItem, presentation: quotaBurn)
         setWeeklyForecastItem(forecastItem, presentation: weeklyForecast)
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
@@ -1109,6 +1225,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func remainingPercentage(used: Double?, reset: Int?) -> Int? {
         guard let used else { return nil }
         return isResetExpired(reset) ? 100 : max(0, 100 - Int(round(used)))
+    }
+
+    private func makeQuotaBurnPresentation(_ info: QuotaInfo) -> QuotaBurnPresentation {
+        let todayText = info.weeklyTodayUsed.map {
+            t("今日约 \(formatQuotaPercent($0))", "today ~\(formatQuotaPercent($0))")
+        } ?? t("今日 -", "today -")
+        let cycleUsed = info.secondaryUsed.map(formatQuotaPercent) ?? "-"
+        let sampleCycles = max(0, info.weeklyHistoricalSampleCycles ?? 0)
+        let typicalPerDay = info.weeklyHistoricalRatePctPerHabitHour.flatMap {
+            $0.isFinite && $0 > 0 && sampleCycles >= 2 ? $0 * 24 : nil
+        }
+        let detailText = typicalPerDay.map {
+            t(
+                "本期\(cycleUsed) · 常态\(formatQuotaPercent($0))/日",
+                "cycle \(cycleUsed) · typical \(formatQuotaPercent($0))/d"
+            )
+        } ?? t("本期 \(cycleUsed)", "cycle \(cycleUsed)")
+
+        let cycleAverage = info.weeklyCycleAveragePctPerDay.flatMap {
+            $0.isFinite && $0 >= 0 ? $0 : nil
+        }
+        let cycleAverageText = cycleAverage.map {
+            t("当前周期折合 \(formatQuotaPercent($0))/日", "current cycle averages \(formatQuotaPercent($0))/day")
+        } ?? t("当前周期均耗暂不可用", "current cycle average unavailable")
+        let typicalText = typicalPerDay.map {
+            t(
+                "历史常态约 \(formatQuotaPercent($0))/日，取 \(sampleCycles) 个可用周期的稳健中位数，优先采用持续至少 3 天的周期。",
+                "Historical typical burn is about \(formatQuotaPercent($0))/day, the robust median of \(sampleCycles) usable cycles, preferring cycles lasting at least three days."
+            )
+        } ?? t("历史周期样本仍在积累。", "Historical cycle samples are still building.")
+        let tooltip = t(
+            "\(todayText)；本周期累计 \(cycleUsed)，\(cycleAverageText)；均匀预算为 14.3%/日。\(typicalText) Token 与额度百分比不做换算。",
+            "\(todayText); \(cycleUsed) used this cycle, \(cycleAverageText); the even budget is 14.3%/day. \(typicalText) Token volume is not converted into quota percentage."
+        )
+        return QuotaBurnPresentation(value: todayText, detail: detailText, tooltip: tooltip)
+    }
+
+    private func setQuotaBurnItem(_ item: NSMenuItem, presentation: QuotaBurnPresentation) {
+        setInfoItem(
+            item,
+            label: t("额度油耗", "Quota burn"),
+            value: presentation.value,
+            detail: presentation.detail
+        )
+        item.view?.toolTip = presentation.tooltip
+        item.view?.subviews.forEach { $0.toolTip = presentation.tooltip }
+    }
+
+    private func formatQuotaPercent(_ value: Double) -> String {
+        let rounded = value.rounded()
+        if abs(value - rounded) < 0.05 {
+            return String(format: "%.0f%%", rounded)
+        }
+        return String(format: "%.1f%%", value)
     }
 
     private func makeWeeklyForecastPresentation(_ info: QuotaInfo) -> WeeklyForecastPresentation {
@@ -1185,9 +1355,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             spanText = String(format: "%.0fh", spanHours)
         }
         let habitDays = max(0, info.weeklyHabitSampleDays ?? 0)
-        let usesHabitModel = info.weeklyTrendModel == "habit" && habitDays > 0
+        let paceCycles = max(0, info.weeklyHistoricalSampleCycles ?? 0)
+        let usesHistoryModel = info.weeklyTrendModel == "habit-history" && paceCycles >= 2
+        let usesHabitModel = (info.weeklyTrendModel == "habit" || usesHistoryModel) && habitDays > 0
         let confidence: String
-        if usesHabitModel {
+        if usesHistoryModel {
             let shortConfidence: String
             switch info.weeklyTrendConfidence {
             case "high": shortConfidence = t("高", "high")
@@ -1195,18 +1367,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default: shortConfidence = t("低", "low")
             }
             confidence = t(
-                "\(shortConfidence) · 历史\(habitDays)d",
-                "\(shortConfidence) · \(habitDays)d"
+                "\(shortConfidence) · 常态\(paceCycles)期",
+                "\(shortConfidence) · \(paceCycles) cycles"
             )
+        } else if usesHabitModel {
+            let shortConfidence = info.weeklyTrendConfidence == "high"
+                ? t("高", "high")
+                : (info.weeklyTrendConfidence == "medium" ? t("中", "med") : t("低", "low"))
+            confidence = t("\(shortConfidence) · 历史\(habitDays)d", "\(shortConfidence) · \(habitDays)d")
         } else {
             confidence = spanHours > 0 ? "\(confidenceName) · \(spanText)" : confidenceName
         }
-        let habitHint = usesHabitModel
+        let habitHint = usesHistoryModel
+            ? t(
+                "未来速度以历史常态周期的稳健中位数为基线，短期重置冲量会被降权；本周期持续变化后才逐步接管预测。活跃时段仍按近 \(habitDays) 天作息分配。",
+                "Future pace starts from the robust median of typical historical cycles, down-weighting short reset sprints; the current cycle takes over only after sustained evidence. Active hours still follow the last \(habitDays) days."
+            )
+            : (usesHabitModel
             ? t(
                 "预测按近 \(habitDays) 天本机活跃时段加权，夜间和历史空闲时段不会沿用白天速率。",
                 "The forecast weights the last \(habitDays) days of local active hours, so nights and historically idle periods do not continue the daytime rate."
             )
-            : ""
+            : "")
 
         guard let rate = info.weeklyTrendRatePctPerHour,
               rate.isFinite,
@@ -1234,6 +1416,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let remainingHours = max(0, resetAt.timeIntervalSince(now) / 3600)
         let projectedUsed = info.weeklyTrendProjectedUsed.flatMap { $0.isFinite ? $0 : nil }
             ?? (used + rate * remainingHours)
+        let projectedLowUsed = info.weeklyTrendProjectedLowUsed.flatMap { $0.isFinite ? $0 : nil }
+            ?? projectedUsed
+        let projectedHighUsed = info.weeklyTrendProjectedHighUsed.flatMap { $0.isFinite ? $0 : nil }
+            ?? projectedUsed
+        let lowerProjection = min(projectedLowUsed, projectedHighUsed)
+        let upperProjection = max(projectedLowUsed, projectedHighUsed)
+        let rangeCrossesExhaustion = lowerProjection < 100 && upperProjection >= 100
         let summary: String
         let forecastPoint: CGPoint
         let tone: NSColor
@@ -1259,25 +1448,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     ? String(format: "%.0f 小时", earlyHours)
                     : String(format: "%.0f hours", earlyHours)
             }
-            summary = t("预计提前 \(earlyText) 用完", "Runs out \(earlyText) early")
+            if rangeCrossesExhaustion {
+                summary = t("存在提前用完风险", "Risk of running out early")
+            } else if lowerProjection >= 100, info.weeklyTrendConfidence == "low" {
+                summary = t("按常态可能提前用完", "Typical pace may run out early")
+            } else {
+                summary = t("预计提前 \(earlyText) 用完", "Runs out \(earlyText) early")
+            }
             let exhaustProgress = min(1, max(0, exhaustAt.timeIntervalSince(startAt) / weekSeconds))
             forecastPoint = CGPoint(x: exhaustProgress, y: 1)
-            tone = .systemRed
+            tone = (rangeCrossesExhaustion || info.weeklyTrendConfidence == "low") ? .systemOrange : .systemRed
         } else {
             let projectedRemaining = max(0, 100 - projectedUsed)
-            summary = t(
-                "预计重置时剩 \(Int(round(projectedRemaining)))%",
-                "\(Int(round(projectedRemaining)))% left at reset"
-            )
+            if rangeCrossesExhaustion {
+                summary = t("预计可撑到重置 · 有波动", "Likely lasts · variable")
+            } else {
+                summary = t(
+                    "预计重置时剩 \(Int(round(projectedRemaining)))%",
+                    "\(Int(round(projectedRemaining)))% left at reset"
+                )
+            }
             forecastPoint = CGPoint(x: 1, y: CGFloat(projectedUsed / 100))
-            tone = projectedRemaining < 15 ? .systemOrange : .systemGreen
+            tone = (rangeCrossesExhaustion || projectedRemaining < 15) ? .systemOrange : .systemGreen
         }
         let markerHint = resetCreditMarker.map {
             t("，竖线标记\($0.label)", "; vertical marker: \($0.label)")
         } ?? ""
+        let rangeHint = rangeCrossesExhaustion
+            ? t("稳健区间跨过 100% 用完线，因此当前只提示风险，不给确定的提前天数。", "The robust range crosses the 100% exhaustion line, so this is shown as a risk rather than a certain early date.")
+            : ""
         let tooltip = t(
-            "\(summary)，\(confidence)。\(habitHint)实线为实际消耗，彩色虚线为预测，灰线为均匀预算\(markerHint)。",
-            "\(summary), \(confidence). \(habitHint) Solid is actual usage, colored dash is forecast, gray is the even-budget line\(markerHint)."
+            "\(summary)，\(confidence)。\(habitHint)\(rangeHint)实线为实际消耗，彩色虚线为典型预测，灰线为均匀预算\(markerHint)。",
+            "\(summary), \(confidence). \(habitHint) \(rangeHint) Solid is actual usage, colored dash is the typical projection, gray is the even-budget line\(markerHint)."
         )
         return WeeklyForecastPresentation(
             summary: summary,
@@ -1669,12 +1871,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 weeklyTrendSpanHours: nil,
                 weeklyTrendPoints: nil,
                 weeklyTrendProjectedUsed: nil,
+                weeklyTrendProjectedLowUsed: nil,
+                weeklyTrendProjectedHighUsed: nil,
                 weeklyTrendExhaustAt: nil,
                 weeklyTrendModel: nil,
+                weeklyTodayUsed: nil,
+                weeklyTodayBaselineUsed: nil,
+                weeklyTodayBaselineDayStart: nil,
+                weeklyCycleAveragePctPerDay: nil,
                 weeklyHabitWeights: nil,
                 weeklyHabitTimeZoneOffsetSeconds: nil,
                 weeklyHabitSampleDays: nil,
                 weeklyHabitSampleBuckets: nil,
+                weeklyHistoricalRatePctPerHabitHour: nil,
+                weeklyHistoricalLowRatePctPerHabitHour: nil,
+                weeklyHistoricalHighRatePctPerHabitHour: nil,
+                weeklyHistoricalSampleCycles: nil,
                 topThread: nil,
                 topThreadTokens: nil,
                 activeThreads: nil,
@@ -2136,6 +2348,121 @@ def build_habit_profile(active_buckets, window_start_at, lookback_days=28):
         "sampleBuckets": len(accepted),
     }
 
+def quantile(values, fraction):
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return None
+    if len(ordered) == 1:
+        return ordered[0]
+    position = max(0.0, min(1.0, float(fraction))) * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    blend = position - lower
+    return ordered[lower] * (1 - blend) + ordered[upper] * blend
+
+def build_historical_pace_profile(
+    points,
+    target_reset,
+    now_at,
+    habit_weights,
+    habit_offset_seconds=0,
+    minimum_cycle_hours=72,
+):
+    empty = {
+        "rate": None,
+        "lowRate": None,
+        "highRate": None,
+        "sampleCycles": 0,
+        "excludedShortCycles": 0,
+    }
+    try:
+        target_reset = float(target_reset)
+        now_at = float(now_at)
+    except (TypeError, ValueError):
+        return empty
+    if (
+        not isinstance(habit_weights, list)
+        or len(habit_weights) != 168
+        or not any(isinstance(value, (int, float)) and value > 0 for value in habit_weights)
+    ):
+        return empty
+    weights = [max(0.0, float(value)) for value in habit_weights]
+
+    clusters = []
+    cutoff = now_at - 35 * 24 * 3600
+    for raw_timestamp, raw_used, raw_reset in points:
+        try:
+            timestamp = raw_timestamp.timestamp() if hasattr(raw_timestamp, "timestamp") else float(raw_timestamp)
+            used = max(0.0, min(100.0, float(raw_used)))
+            reset = float(raw_reset)
+        except (TypeError, ValueError):
+            continue
+        if timestamp < cutoff - 24 * 3600 or timestamp > now_at + 300:
+            continue
+        cluster = next((item for item in clusters if abs(item["reset"] - reset) <= 300), None)
+        if cluster is None:
+            cluster = {"reset": reset, "points": []}
+            clusters.append(cluster)
+        cluster["points"].append((timestamp, used))
+
+    if not any(abs(item["reset"] - target_reset) <= 300 for item in clusters):
+        clusters.append({"reset": target_reset, "points": []})
+
+    clusters.sort(key=lambda item: item["reset"])
+    all_rates = []
+    long_rates = []
+    for index, cluster in enumerate(clusters):
+        reset = cluster["reset"]
+        if abs(reset - target_reset) <= 300:
+            continue
+        start_at = reset - 7 * 24 * 3600
+        next_start = None
+        if index + 1 < len(clusters):
+            next_start = clusters[index + 1]["reset"] - 7 * 24 * 3600
+        end_at = reset
+        if next_start is not None and next_start > start_at:
+            end_at = min(end_at, next_start)
+        if end_at > now_at + 300 or end_at <= start_at:
+            continue
+
+        buckets = {}
+        for timestamp, used in cluster["points"]:
+            if timestamp < start_at - 300 or timestamp > end_at + 300:
+                continue
+            bucket = int(timestamp // 300) * 300
+            buckets[bucket] = max(used, buckets.get(bucket, 0.0))
+        if not buckets:
+            continue
+        last_observed_at = max(buckets)
+        if end_at - last_observed_at > 18 * 3600:
+            continue
+        used = max(buckets.values())
+        cycle_weight = habit_weight_between(
+            start_at,
+            end_at,
+            weights,
+            habit_offset_seconds,
+        )
+        if used <= 0 or cycle_weight < 2:
+            continue
+        rate = used / cycle_weight
+        all_rates.append(rate)
+        if (end_at - start_at) / 3600 >= minimum_cycle_hours:
+            long_rates.append(rate)
+
+    selected = long_rates if len(long_rates) >= 2 else []
+    if not selected:
+        return empty
+    low_rate = quantile(selected, 0.25) if len(selected) >= 4 else min(selected)
+    high_rate = quantile(selected, 0.75) if len(selected) >= 4 else max(selected)
+    return {
+        "rate": quantile(selected, 0.5),
+        "lowRate": low_rate,
+        "highRate": high_rate,
+        "sampleCycles": len(selected),
+        "excludedShortCycles": max(0, len(all_rates) - len(selected)),
+    }
+
 def build_weekly_trend(
     points,
     reset_at,
@@ -2145,6 +2472,10 @@ def build_weekly_trend(
     habit_offset_seconds=0,
     habit_sample_days=0,
     habit_sample_buckets=0,
+    historical_rate=None,
+    historical_low_rate=None,
+    historical_high_rate=None,
+    historical_sample_cycles=0,
 ):
     empty = {
         "rate": None,
@@ -2152,7 +2483,13 @@ def build_weekly_trend(
         "spanHours": 0.0,
         "points": [],
         "projectedUsed": None,
+        "projectedLowUsed": None,
+        "projectedHighUsed": None,
         "exhaustAt": None,
+        "todayUsed": None,
+        "todayBaselineUsed": None,
+        "todayBaselineDayStart": None,
+        "cycleAveragePctPerDay": None,
         "model": "elapsed",
     }
     try:
@@ -2168,6 +2505,7 @@ def build_weekly_trend(
         return empty
 
     buckets = {}
+    raw_observed = []
     for timestamp, used, point_reset in points:
         try:
             timestamp = timestamp.timestamp() if hasattr(timestamp, "timestamp") else float(timestamp)
@@ -2181,6 +2519,7 @@ def build_weekly_trend(
             continue
         if timestamp < start_at - 300 or timestamp > now_at + 300:
             continue
+        raw_observed.append((timestamp, used))
         bucket = int(timestamp // 300) * 300
         buckets[bucket] = max(used, buckets.get(bucket, 0.0))
 
@@ -2189,6 +2528,8 @@ def build_weekly_trend(
     for timestamp, used in sorted(buckets.items()):
         highest = max(highest, used)
         observed.append((float(timestamp), highest))
+    if not observed or observed[-1][0] != now_at or observed[-1][1] != current_used:
+        observed.append((now_at, current_used))
 
     chart_source = [(start_at, 0.0)] + observed
     target = now_at - 24 * 3600
@@ -2196,12 +2537,17 @@ def build_weekly_trend(
     anchor = earlier[-1] if earlier else (chart_source[0] if chart_source else None)
 
     span_hours = 0.0
-    if len(observed) >= 2:
-        span_hours = max(0.0, (observed[-1][0] - observed[0][0]) / 3600)
-    changes = sum(a[1] < b[1] for a, b in zip(observed, observed[1:]))
-    if habit_sample_days >= 18 and habit_sample_buckets >= 48 and span_hours >= 24 and changes >= 3:
+    real_observed = [item for item in observed if item[0] > start_at + 300]
+    if len(real_observed) >= 2:
+        span_hours = max(0.0, (real_observed[-1][0] - real_observed[0][0]) / 3600)
+    changes = sum(a[1] < b[1] for a, b in zip(real_observed, real_observed[1:]))
+    try:
+        pace_cycles = max(0, int(historical_sample_cycles or 0))
+    except (TypeError, ValueError):
+        pace_cycles = 0
+    if pace_cycles >= 4 and span_hours >= 48 and changes >= 5:
         confidence = "high"
-    elif habit_sample_days >= 7 and habit_sample_buckets >= 20 and changes >= 2:
+    elif pace_cycles >= 3 and span_hours >= 24 and changes >= 3:
         confidence = "medium"
     elif span_hours >= 48 and changes >= 5:
         confidence = "high"
@@ -2226,6 +2572,19 @@ def build_weekly_trend(
         and len(habit_weights) == 168
         and any(isinstance(value, (int, float)) and value > 0 for value in habit_weights)
     )
+    try:
+        historical_rate = float(historical_rate)
+    except (TypeError, ValueError):
+        historical_rate = None
+    try:
+        historical_low_rate = float(historical_low_rate)
+    except (TypeError, ValueError):
+        historical_low_rate = None
+    try:
+        historical_high_rate = float(historical_high_rate)
+    except (TypeError, ValueError):
+        historical_high_rate = None
+    usable_history = historical_rate is not None and historical_rate > 0 and pace_cycles >= 2
     remaining_hours = max(0.0, (reset_at - now_at) / 3600)
     if usable_habit:
         weights = [max(0.0, float(value)) for value in habit_weights]
@@ -2234,20 +2593,37 @@ def build_weekly_trend(
             1 / 60,
         )
         base_habit_rate = current_used / elapsed_weight
-        habit_rate = base_habit_rate
+        habit_rate = historical_rate if usable_history else base_habit_rate
+        low_habit_rate = min(
+            historical_low_rate if historical_low_rate is not None and historical_low_rate > 0 else habit_rate,
+            historical_high_rate if historical_high_rate is not None and historical_high_rate > 0 else habit_rate,
+        )
+        high_habit_rate = max(
+            historical_low_rate if historical_low_rate is not None and historical_low_rate > 0 else habit_rate,
+            historical_high_rate if historical_high_rate is not None and historical_high_rate > 0 else habit_rate,
+        )
         if anchor is not None:
             coverage_hours = (now_at - anchor[0]) / 3600
             recent_habit_weight = habit_weight_between(
                 anchor[0], now_at, weights, habit_offset_seconds
             )
-            if coverage_hours >= 6 and recent_habit_weight >= 1:
+            if coverage_hours >= 12 and recent_habit_weight >= 1:
                 recent_rate = max(0.0, (current_used - anchor[1]) / recent_habit_weight)
-                recent_cap = max(base_habit_rate * 2.5, base_habit_rate + 0.25)
+                reference_rate = historical_rate if usable_history else base_habit_rate
+                reference_high = max(high_habit_rate, reference_rate)
+                recent_cap = max(reference_high * 2, reference_rate + 0.5)
                 recent_rate = min(recent_rate, recent_cap)
-                recent_weight = 0.35 * min(1.0, coverage_hours / 24)
-                habit_rate = base_habit_rate * (1 - recent_weight) + recent_rate * recent_weight
+                if usable_history:
+                    recent_weight = min(0.45, 0.15 + 0.30 * min(1.0, max(0.0, span_hours - 12) / 36))
+                else:
+                    recent_weight = 0.35 * min(1.0, coverage_hours / 24)
+                habit_rate = habit_rate * (1 - recent_weight) + recent_rate * recent_weight
+                low_habit_rate = low_habit_rate * (1 - recent_weight) + recent_rate * recent_weight
+                high_habit_rate = high_habit_rate * (1 - recent_weight) + recent_rate * recent_weight
         future_weight = habit_weight_between(now_at, reset_at, weights, habit_offset_seconds)
         projected_used = current_used + habit_rate * future_weight
+        projected_low_used = current_used + min(low_habit_rate, high_habit_rate) * future_weight
+        projected_high_used = current_used + max(low_habit_rate, high_habit_rate) * future_weight
         rate = max(0.0, projected_used - current_used) / remaining_hours if remaining_hours > 0 else 0.0
         exhaust_at = (
             habit_exhaust_at(
@@ -2260,7 +2636,7 @@ def build_weekly_trend(
             if projected_used >= 100 and habit_rate > 0
             else None
         )
-        model = "habit"
+        model = "habit-history" if usable_history else "habit"
     else:
         elapsed_hours = max((now_at - start_at) / 3600, 1 / 60)
         base_rate = current_used / elapsed_hours
@@ -2274,6 +2650,8 @@ def build_weekly_trend(
                 recent_weight = 0.35 * min(1.0, coverage_hours / 24)
                 rate = base_rate * (1 - recent_weight) + recent_rate * recent_weight
         projected_used = current_used + rate * remaining_hours
+        projected_low_used = projected_used
+        projected_high_used = projected_used
         exhaust_at = (
             now_at + max(0.0, (100 - current_used) / rate) * 3600
             if projected_used >= 100 and rate > 0
@@ -2281,13 +2659,35 @@ def build_weekly_trend(
         )
         model = "elapsed"
 
+    local_day_start = ((now_at + int(habit_offset_seconds)) // 86400) * 86400 - int(habit_offset_seconds)
+    if start_at >= local_day_start:
+        used_at_day_start = 0.0
+    else:
+        day_start_points = [item for item in raw_observed if item[0] <= local_day_start]
+        latest_baseline_at = max((item[0] for item in day_start_points), default=None)
+        used_at_day_start = (
+            max(item[1] for item in day_start_points)
+            if latest_baseline_at is not None and local_day_start - latest_baseline_at <= 6 * 3600
+            else None
+        )
+    today_used = max(0.0, current_used - used_at_day_start) if used_at_day_start is not None else None
+    elapsed_hours = max((now_at - start_at) / 3600, 1 / 60)
+    cycle_average = current_used / max(elapsed_hours / 24, 1 / 24)
+    pace_is_building = not usable_history and (span_hours < 12 or changes < 3)
+
     return {
-        "rate": rate,
+        "rate": None if pace_is_building else rate,
         "confidence": confidence,
         "spanHours": span_hours,
-        "projectedUsed": projected_used,
-        "exhaustAt": exhaust_at,
-        "model": model,
+        "projectedUsed": None if pace_is_building else projected_used,
+        "projectedLowUsed": None if pace_is_building else projected_low_used,
+        "projectedHighUsed": None if pace_is_building else projected_high_used,
+        "exhaustAt": None if pace_is_building else exhaust_at,
+        "todayUsed": today_used,
+        "todayBaselineUsed": used_at_day_start,
+        "todayBaselineDayStart": local_day_start if used_at_day_start is not None else None,
+        "cycleAveragePctPerDay": cycle_average,
+        "model": "building" if pace_is_building else model,
         "points": [
             {"timestamp": float(timestamp), "used": float(used)}
             for timestamp, used in display_points
@@ -2321,7 +2721,7 @@ def read_app_server_quota(timeout_seconds=8):
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.42"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.43"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -2413,12 +2813,22 @@ def empty_stats_out(snapshot):
         "weeklyTrendSpanHours": 0.0,
         "weeklyTrendPoints": [],
         "weeklyTrendProjectedUsed": None,
+        "weeklyTrendProjectedLowUsed": None,
+        "weeklyTrendProjectedHighUsed": None,
         "weeklyTrendExhaustAt": None,
         "weeklyTrendModel": None,
+        "weeklyTodayUsed": None,
+        "weeklyTodayBaselineUsed": None,
+        "weeklyTodayBaselineDayStart": None,
+        "weeklyCycleAveragePctPerDay": None,
         "weeklyHabitWeights": [],
         "weeklyHabitTimeZoneOffsetSeconds": int(tz.utcoffset(None).total_seconds()),
         "weeklyHabitSampleDays": 0,
         "weeklyHabitSampleBuckets": 0,
+        "weeklyHistoricalRatePctPerHabitHour": None,
+        "weeklyHistoricalLowRatePctPerHabitHour": None,
+        "weeklyHistoricalHighRatePctPerHabitHour": None,
+        "weeklyHistoricalSampleCycles": 0,
         "topThread": None,
         "topThreadTokens": None,
         "activeThreads": 0,
@@ -2758,6 +3168,13 @@ try:
 except (TypeError, ValueError):
     weekly_start_at = None
 habit_profile = build_habit_profile(activity_buckets, weekly_start_at)
+historical_pace = build_historical_pace_profile(
+    weekly_points,
+    reset_at,
+    now.timestamp(),
+    habit_profile.get("weights"),
+    habit_profile.get("timeZoneOffsetSeconds", 0),
+)
 weekly_trend = build_weekly_trend(
     weekly_points,
     reset_at,
@@ -2767,6 +3184,10 @@ weekly_trend = build_weekly_trend(
     habit_offset_seconds=habit_profile.get("timeZoneOffsetSeconds", 0),
     habit_sample_days=habit_profile.get("sampleDays", 0),
     habit_sample_buckets=habit_profile.get("sampleBuckets", 0),
+    historical_rate=historical_pace.get("rate"),
+    historical_low_rate=historical_pace.get("lowRate"),
+    historical_high_rate=historical_pace.get("highRate"),
+    historical_sample_cycles=historical_pace.get("sampleCycles", 0),
 )
 
 out = dict(latest)
@@ -2780,12 +3201,22 @@ out.update({
     "weeklyTrendSpanHours": weekly_trend.get("spanHours"),
     "weeklyTrendPoints": weekly_trend.get("points"),
     "weeklyTrendProjectedUsed": weekly_trend.get("projectedUsed"),
+    "weeklyTrendProjectedLowUsed": weekly_trend.get("projectedLowUsed"),
+    "weeklyTrendProjectedHighUsed": weekly_trend.get("projectedHighUsed"),
     "weeklyTrendExhaustAt": weekly_trend.get("exhaustAt"),
     "weeklyTrendModel": weekly_trend.get("model"),
+    "weeklyTodayUsed": weekly_trend.get("todayUsed"),
+    "weeklyTodayBaselineUsed": weekly_trend.get("todayBaselineUsed"),
+    "weeklyTodayBaselineDayStart": weekly_trend.get("todayBaselineDayStart"),
+    "weeklyCycleAveragePctPerDay": weekly_trend.get("cycleAveragePctPerDay"),
     "weeklyHabitWeights": habit_profile.get("weights"),
     "weeklyHabitTimeZoneOffsetSeconds": habit_profile.get("timeZoneOffsetSeconds"),
     "weeklyHabitSampleDays": habit_profile.get("sampleDays"),
     "weeklyHabitSampleBuckets": habit_profile.get("sampleBuckets"),
+    "weeklyHistoricalRatePctPerHabitHour": historical_pace.get("rate"),
+    "weeklyHistoricalLowRatePctPerHabitHour": historical_pace.get("lowRate"),
+    "weeklyHistoricalHighRatePctPerHabitHour": historical_pace.get("highRate"),
+    "weeklyHistoricalSampleCycles": historical_pace.get("sampleCycles", 0),
     "topThread": top_thread,
     "topThreadTokens": top_thread_tokens,
     "activeThreads": len(active_thread_ids),

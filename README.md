@@ -13,7 +13,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 - Quota rings adapt to the windows returned by Codex: two rings show weekly + 5-hour remaining, while a weekly-only response shows one outer ring
 - Center dice pips: available full-reset credits, visually capped at six while the tooltip keeps the exact count
 - Icon style: choose **Rounded dice (reset credits)** or **Round bolt (service tier)** from the `Icon Style` menu; the choice is remembered locally
-- Menu details: reset times, available full-reset credits and their expiry dates, today's token burn, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
+- Menu details: reset times, available full-reset credits and their expiry dates, today's token burn, quota burn reference, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
 It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
 
@@ -96,7 +96,8 @@ Example in English (the forecast row is graphical in the app):
 1w left     96%    May 12 08:43
 Resets       4     nearest expires May 10 ›
 Today burn  76.2M
-Forecast    12% left at reset  medium confidence
+Quota burn today ~4%   cycle 4% · typical 17%/day
+Forecast    risk of running out early  low · 2 cycles
 Top         Codex Battery  21.5M
 Activity    1 thread active in 2m
 Data at     18:43:17
@@ -108,7 +109,8 @@ Example in Chinese:
 5小时剩余  82%    18:44
 1周剩余    96%    5月12日 08:43
 今日消耗    76.2M
-周预测      预计重置时剩 12%  中置信
+额度油耗    今日约 4%   本期4% · 常态17%/日
+周预测      存在提前用完风险  低 · 常态2期
 Top         Codex Battery  21.5M
 后台活动    近2分钟 1个线程仍在消耗
 数据于      18:43:17
@@ -122,7 +124,9 @@ The graphical forecast row uses three trend lines plus an expiry marker:
 
 When full-reset credits are available, the menu shows their count in a separate row. Open that row to see every exact expiry date returned by the API; if the count exceeds the valid dates, the submenu says how many dates are unavailable. The nearest group that expires within the current weekly chart range is marked on the time axis with an orange vertical line and date, turning red inside 24 hours. Expiries after the weekly reset remain in the expanded list instead of stretching and distorting the forecast axis.
 
-The estimate collapses quota snapshots from the current reset window into 5-minute buckets. It also turns 15-minute local activity buckets from the previous 28 complete calendar days into a personal weekday-by-hour profile. Current burn is measured in that weighted active time and blended with roughly the latest 24-hour change, so nights and historically idle periods no longer inherit the daytime rate. The compact label includes confidence and usable history, for example `med · 28d`; if history is sparse, the model falls back to the current reset window alone.
+The estimate separates *when* you normally work from *how quickly* you normally use quota. It collapses current-window snapshots into 5-minute buckets and turns 15-minute local activity buckets from the previous 28 complete calendar days into a weekday-by-hour profile. Historical pace uses a robust median of recent quota cycles and prefers cycles lasting at least three days, so short full-reset sprints do not dominate the next forecast. The current cycle only gains influence after sustained evidence; without a usable historical baseline, the first 12 hours remain in `Building forecast` instead of declaring an early exhaustion date.
+
+`Quota burn` is the factual reference behind the estimate: today's weekly-quota change, estimated from the nearest usable local snapshot, appears on the left; historical typical pace per day appears on the right. Its tooltip also shows cumulative use and the current cycle's raw daily equivalent. Token volume remains a separate row because token count and quota percentage do not have a stable conversion. When the robust forecast range crosses the 100% exhaustion line, the menu uses an orange risk message instead of a certain red date; red is reserved for a mature pace estimate whose range is already beyond the limit.
 
 `Data at` is the time of the quota snapshot. In normal operation it comes from Codex app-server's `account/rateLimits/read` response, which matches the native Codex quota panel more closely. If that request fails before any live quota has been cached, Codex Battery falls back to the latest local `token_count` event, and then this time reflects that event timestamp. After a live quota snapshot has been cached, a failed refresh keeps that snapshot and marks the row as `Stale` instead of replacing it with older rollout-log quota.
 
@@ -166,7 +170,7 @@ If Codex is temporarily writing, checkpointing, or migrating `~/.codex/state_5.s
 
 ## Accuracy
 
-This is an unofficial local dashboard. Current 5-hour and weekly quota are read from the same local Codex app-server account-rate-limit path used by the native UI. Today and top-thread statistics come from local rollout logs. The forecast keeps only bucketed activity times and quota changes in memory; it does not persist a profile of conversation text or titles. History can still lag if Codex has not flushed recent events. Forecast confidence communicates the amount of usable history; it is an estimate of the current pace, not a quota guarantee.
+This is an unofficial local dashboard. Current 5-hour and weekly quota are read from the same local Codex app-server account-rate-limit path used by the native UI. Today and top-thread statistics come from local rollout logs. The forecast keeps only bucketed activity times and quota changes in memory; it does not persist a profile of conversation text or titles. History can still lag if Codex has not flushed recent events. Forecast confidence now reflects pace evidence rather than activity-history volume alone; it is still an estimate, not a quota guarantee.
 
 Treat it as a fast dashboard, not an accounting source of truth.
 

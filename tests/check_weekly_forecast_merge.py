@@ -32,8 +32,10 @@ let reset = week
 let now = 72.0 * 3600
 let points = [
     WeeklyTrendPoint(timestamp: 0, used: 0),
+    WeeklyTrendPoint(timestamp: 24 * 3600, used: 5),
     WeeklyTrendPoint(timestamp: 48 * 3600, used: 10),
-    WeeklyTrendPoint(timestamp: now, used: 20),
+    WeeklyTrendPoint(timestamp: 60 * 3600, used: 20),
+    WeeklyTrendPoint(timestamp: now, used: 30),
 ]
 
 private let sameWeek = WeeklyTrendCalculator.merge(
@@ -54,11 +56,11 @@ for weekday in 0..<5 {{
         habitWeights[weekday * 24 + hour] = 1
     }}
 }}
-let habitNow = 5.0 * 3600
+let habitNow = 13.0 * 3600
 let habitPoints = [
-    WeeklyTrendPoint(timestamp: 0, used: 0),
-    WeeklyTrendPoint(timestamp: 2 * 3600, used: 5),
-    WeeklyTrendPoint(timestamp: 4 * 3600, used: 15),
+    WeeklyTrendPoint(timestamp: 1 * 3600, used: 0),
+    WeeklyTrendPoint(timestamp: 4 * 3600, used: 5),
+    WeeklyTrendPoint(timestamp: 8 * 3600, used: 15),
     WeeklyTrendPoint(timestamp: habitNow, used: 20),
 ]
 private let habitWeek = WeeklyTrendCalculator.merge(
@@ -73,9 +75,67 @@ private let habitWeek = WeeklyTrendCalculator.merge(
     habitSampleBuckets: 80
 )
 precondition(habitWeek.model == "habit")
-precondition(habitWeek.confidence == "medium")
+precondition(habitWeek.confidence == "low")
 precondition((habitWeek.projectedUsed ?? 0) > 100)
 precondition((habitWeek.exhaustAt ?? 0) > habitNow + 72 * 3600)
+
+let historicalWeights = [Double](repeating: 1, count: 168)
+let earlyBurstNow = 6.0 * 3600
+let earlyBurstPoints = [
+    WeeklyTrendPoint(timestamp: 0, used: 0),
+    WeeklyTrendPoint(timestamp: 2 * 3600, used: 5),
+    WeeklyTrendPoint(timestamp: 4 * 3600, used: 15),
+    WeeklyTrendPoint(timestamp: earlyBurstNow, used: 20),
+]
+private let historicalWeek = WeeklyTrendCalculator.merge(
+    points: earlyBurstPoints,
+    sourceReset: Int(reset),
+    targetReset: Int(reset),
+    timestamp: iso(earlyBurstNow),
+    currentUsed: 20,
+    habitWeights: historicalWeights,
+    historicalRatePctPerHabitHour: 0.30,
+    historicalLowRatePctPerHabitHour: 0.20,
+    historicalHighRatePctPerHabitHour: 0.50,
+    historicalSampleCycles: 4
+)
+precondition(historicalWeek.model == "habit-history")
+precondition(historicalWeek.rate != nil)
+precondition((historicalWeek.projectedUsed ?? 0) > 60)
+precondition((historicalWeek.projectedUsed ?? 100) < 80)
+precondition((historicalWeek.projectedLowUsed ?? 100) < (historicalWeek.projectedUsed ?? 0))
+precondition((historicalWeek.projectedUsed ?? 100) < (historicalWeek.projectedHighUsed ?? 0))
+precondition((historicalWeek.projectedLowUsed ?? 100) < 100)
+precondition((historicalWeek.projectedHighUsed ?? 0) >= 100)
+precondition(historicalWeek.exhaustAt == nil)
+
+let midnightNow = 49.0 * 3600
+private let cachedMidnightBaseline = WeeklyTrendCalculator.merge(
+    points: [
+        WeeklyTrendPoint(timestamp: 48 * 3600 + 120, used: 11),
+        WeeklyTrendPoint(timestamp: midnightNow, used: 12),
+    ],
+    sourceReset: Int(reset),
+    targetReset: Int(reset),
+    timestamp: iso(midnightNow),
+    currentUsed: 12,
+    todayBaselineUsed: 10,
+    todayBaselineDayStart: 48 * 3600
+)
+precondition(abs((cachedMidnightBaseline.todayUsed ?? 0) - 2) < 0.001)
+precondition(cachedMidnightBaseline.todayBaselineUsed == 10)
+precondition(cachedMidnightBaseline.todayBaselineDayStart == 48 * 3600)
+
+private let staleMidnightBaseline = WeeklyTrendCalculator.merge(
+    points: [],
+    sourceReset: Int(reset),
+    targetReset: Int(reset),
+    timestamp: iso(73 * 3600),
+    currentUsed: 13,
+    todayBaselineUsed: 10,
+    todayBaselineDayStart: 48 * 3600
+)
+precondition(staleMidnightBaseline.todayUsed == nil)
 
 private let acceptedBoundary = WeeklyTrendCalculator.merge(
     points: points,
@@ -117,8 +177,10 @@ private let newWeek = WeeklyTrendCalculator.merge(
 )
 precondition(newWeek.confidence == "low")
 precondition(newWeek.points.count == 2)
-precondition(abs((newWeek.rate ?? 0) - (1.0 / 12.0)) < 0.001)
-precondition(newWeek.model == "elapsed")
+precondition(newWeek.rate == nil)
+precondition(newWeek.projectedUsed == nil)
+precondition(newWeek.exhaustAt == nil)
+precondition(newWeek.model == "building")
 
 print("weekly live merge: ok")
 """
