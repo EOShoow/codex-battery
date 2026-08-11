@@ -600,6 +600,36 @@ private enum WeeklyForecastClock {
     }
 }
 
+private struct ResetCreditSnapshot {
+    let count: Int?
+    let expirations: [Int]?
+    let isStale: Bool
+
+    static func resolve(
+        liveCount: Int?,
+        liveExpirations: [Int]?,
+        liveIsStale: Bool = false,
+        cachedCount: Int?,
+        cachedExpirations: [Int]?
+    ) -> ResetCreditSnapshot {
+        if let liveCount {
+            return ResetCreditSnapshot(
+                count: max(0, liveCount),
+                expirations: liveCount == 0 ? [] : liveExpirations,
+                isStale: liveIsStale
+            )
+        }
+        if let cachedCount {
+            return ResetCreditSnapshot(
+                count: max(0, cachedCount),
+                expirations: cachedExpirations,
+                isStale: true
+            )
+        }
+        return ResetCreditSnapshot(count: nil, expirations: nil, isStale: false)
+    }
+}
+
 private struct ResetCreditMarkerTiming {
     let expiration: Date
     let progress: CGFloat
@@ -807,6 +837,7 @@ struct QuotaInfo: Decodable {
     let serviceTier: String?
     let availableResetCredits: Int?
     let resetCreditExpirations: [Int]?
+    let resetCreditsStale: Bool?
     let primaryUsed: Double?
     let secondaryUsed: Double?
     let primaryReset: Int?
@@ -842,7 +873,20 @@ struct QuotaInfo: Decodable {
     let activeThreads: Int?
     let activeWindowSeconds: Int?
 
-    func replacingQuota(with quota: QuotaInfo, activeThreads: Int, activeWindowSeconds: Int) -> QuotaInfo {
+    func replacingQuota(
+        with quota: QuotaInfo,
+        cachedQuota: QuotaInfo? = nil,
+        activeThreads: Int,
+        activeWindowSeconds: Int
+    ) -> QuotaInfo {
+        let resetCreditCache = cachedQuota ?? self
+        let resetCredits = ResetCreditSnapshot.resolve(
+            liveCount: quota.availableResetCredits,
+            liveExpirations: quota.resetCreditExpirations,
+            liveIsStale: quota.resetCreditsStale == true,
+            cachedCount: resetCreditCache.availableResetCredits,
+            cachedExpirations: resetCreditCache.resetCreditExpirations
+        )
         let mergedTrend = WeeklyTrendCalculator.merge(
             points: weeklyTrendPoints ?? [],
             sourceReset: secondaryReset,
@@ -869,8 +913,9 @@ struct QuotaInfo: Decodable {
             limitName: quota.limitName,
             quotaSource: quota.quotaSource,
             serviceTier: serviceTier ?? quota.serviceTier,
-            availableResetCredits: quota.availableResetCredits,
-            resetCreditExpirations: quota.resetCreditExpirations,
+            availableResetCredits: resetCredits.count,
+            resetCreditExpirations: resetCredits.expirations,
+            resetCreditsStale: resetCredits.isStale,
             primaryUsed: quota.primaryUsed,
             secondaryUsed: quota.secondaryUsed,
             primaryReset: quota.primaryReset,
@@ -1043,6 +1088,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if quotaInfo.ok {
                         info = detailInfo.replacingQuota(
                             with: quotaInfo,
+                            cachedQuota: self.lastGoodInfo,
                             activeThreads: self.lastObservedActiveThreads,
                             activeWindowSeconds: self.lastObservedActiveWindowSeconds
                         )
@@ -1058,6 +1104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 } else if quotaInfo.ok, let cached = self.lastGoodInfo {
                     info = cached.replacingQuota(
                         with: quotaInfo,
+                        cachedQuota: cached,
                         activeThreads: self.lastObservedActiveThreads,
                         activeWindowSeconds: self.lastObservedActiveWindowSeconds
                     )
@@ -1188,9 +1235,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let week {
             detailLines.append(useChinese ? "1周剩余: \(week)%  \(secondaryReset)" : "1w left: \(week)%  \(secondaryReset)")
         }
-        let resetCreditsDetail = nearestCreditExpiry.map {
+        var resetCreditsDetail = nearestCreditExpiry.map {
             useChinese ? "可用重置: \(resetCredits)  最近 \($0) 到期" : "Resets available: \(resetCredits)  Nearest expires \($0)"
         } ?? (useChinese ? "可用重置: \(resetCredits)" : "Resets available: \(resetCredits)")
+        if info.resetCreditsStale == true {
+            resetCreditsDetail += t("  旧数据", "  cached")
+        }
         detailLines.append(resetCreditsDetail)
         detailLines.append(useChinese ? "今日: \(today)" : "Today: \(today)")
         detailLines.append(useChinese
@@ -1212,7 +1262,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let week {
             setInfoItem(weekItem, label: t("1周剩余", "1w left"), value: "\(week)%", detail: secondaryReset)
         }
-        setResetCreditsItem(count: availableResetCredits, expirations: resetCreditExpirations)
+        setResetCreditsItem(
+            count: availableResetCredits,
+            expirations: resetCreditExpirations,
+            isStale: info.resetCreditsStale == true
+        )
         setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today)
         setQuotaBurnItem(quotaBurnItem, presentation: quotaBurn)
         setWeeklyForecastItem(forecastItem, presentation: weeklyForecast)
@@ -1529,19 +1583,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return ResetCreditExpiryMarker(progress: timing.progress, label: label, tone: tone)
     }
 
-    private func setResetCreditsItem(count: Int?, expirations: [Date]) {
+    private func setResetCreditsItem(count: Int?, expirations: [Date], isStale: Bool = false) {
         resetCreditsItem.view = nil
         resetCreditsItem.isHidden = false
         resetCreditsItem.isEnabled = true
 
         let countText = count.map(String.init) ?? "-"
+        let staleSuffix = isStale ? t(" · 旧数据", " · cached") : ""
         if let nearest = expirations.first {
             resetCreditsItem.title = t(
-                "可用重置：\(countText) 次 · 最近 \(formatResetCreditExpiry(nearest)) 到期",
-                "Resets available: \(countText) · nearest expires \(formatResetCreditExpiry(nearest))"
+                "可用重置：\(countText) 次 · 最近 \(formatResetCreditExpiry(nearest)) 到期\(staleSuffix)",
+                "Resets available: \(countText) · nearest expires \(formatResetCreditExpiry(nearest))\(staleSuffix)"
             )
         } else {
-            resetCreditsItem.title = t("可用重置：\(countText) 次", "Resets available: \(countText)")
+            resetCreditsItem.title = t(
+                "可用重置：\(countText) 次\(staleSuffix)",
+                "Resets available: \(countText)\(staleSuffix)"
+            )
         }
 
         let submenu = NSMenu(title: t("重置到期日期", "Reset expiry dates"))
@@ -1857,6 +1915,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 serviceTier: nil,
                 availableResetCredits: nil,
                 resetCreditExpirations: nil,
+                resetCreditsStale: nil,
                 primaryUsed: nil,
                 secondaryUsed: nil,
                 primaryReset: nil,
@@ -2716,12 +2775,13 @@ def read_app_server_quota(timeout_seconds=8):
         proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
         proc.stdin.flush()
 
+    last_quota_snapshot = None
     try:
         send({
             "method": "initialize",
             "id": 1,
             "params": {
-                "clientInfo": {"name": "codex-battery", "version": "0.1.43"},
+                "clientInfo": {"name": "codex-battery", "version": "0.1.44"},
                 "capabilities": {
                     "experimentalApi": True,
                     "optOutNotificationMethods": [
@@ -2736,6 +2796,7 @@ def read_app_server_quota(timeout_seconds=8):
         })
         deadline = time.monotonic() + timeout_seconds
         requested = False
+        reset_credit_retry_requested = False
         while time.monotonic() < deadline:
             if proc.stdout is None:
                 break
@@ -2754,12 +2815,12 @@ def read_app_server_quota(timeout_seconds=8):
                 send({"method": "account/rateLimits/read", "id": 2, "params": None})
                 requested = True
                 continue
-            if message.get("id") == 2:
+            if message.get("id") in (2, 3):
                 result = message.get("result") or {}
                 by_id = result.get("rateLimitsByLimitId") or {}
                 snapshot = by_id.get("codex") or result.get("rateLimits")
                 if not snapshot:
-                    return None
+                    return last_quota_snapshot
                 five_hour, week = normalize_quota_windows(
                     snapshot.get("primary"),
                     snapshot.get("secondary"),
@@ -2767,7 +2828,7 @@ def read_app_server_quota(timeout_seconds=8):
                 reset_credits = result.get("rateLimitResetCredits") or {}
                 if not isinstance(reset_credits, dict):
                     reset_credits = {}
-                return {
+                last_quota_snapshot = {
                     "timestamp": datetime.now(tz).isoformat(),
                     "planType": snapshot.get("planType"),
                     "limitId": snapshot.get("limitId"),
@@ -2775,13 +2836,28 @@ def read_app_server_quota(timeout_seconds=8):
                     "quotaSource": "app_server",
                     "availableResetCredits": normalize_reset_credit_count(reset_credits),
                     "resetCreditExpirations": normalize_reset_credit_expirations(reset_credits),
+                    "resetCreditsStale": False,
                     "primaryUsed": five_hour.get("used") if five_hour else None,
                     "secondaryUsed": week.get("used") if week else None,
                     "primaryReset": five_hour.get("reset") if five_hour else None,
                     "secondaryReset": week.get("reset") if week else None,
                 }
+                if (
+                    last_quota_snapshot["availableResetCredits"] is None
+                    and message.get("id") == 2
+                    and not reset_credit_retry_requested
+                ):
+                    # The app-server can return the quota windows successfully
+                    # while transiently leaving reset credits null. Retry only
+                    # that live read once and keep the first quota snapshot if
+                    # the retry does not finish within the grace period.
+                    send({"method": "account/rateLimits/read", "id": 3, "params": None})
+                    reset_credit_retry_requested = True
+                    deadline = max(deadline, time.monotonic() + 4)
+                    continue
+                return last_quota_snapshot
     except Exception:
-        return None
+        pass
     finally:
         try:
             if proc.stdin:
@@ -2796,7 +2872,7 @@ def read_app_server_quota(timeout_seconds=8):
                 proc.kill()
             except Exception:
                 pass
-    return None
+    return last_quota_snapshot
 
 def empty_stats_out(snapshot):
     out = dict(snapshot)

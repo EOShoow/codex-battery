@@ -37,13 +37,49 @@ assert normalize_count({"availableCount": "bad", "credits": [{"status": "availab
 assert normalize_count({"availableCount": True, "credits": []}) == 0
 assert normalize_count("unexpected") is None
 
+snapshot_start = text.index("private struct ResetCreditSnapshot")
+snapshot_end = text.index("private struct ResetCreditMarkerTiming", snapshot_start)
+snapshot_logic = text[snapshot_start:snapshot_end]
+
 swift_start = text.index("private struct ResetCreditMarkerTiming")
 swift_end = text.index("private struct ResetCreditExpiryMarker", swift_start)
 timeline = text[swift_start:swift_end]
 swift_test = f"""
 import Foundation
 
+{snapshot_logic}
+
 {timeline}
+
+private let preserved = ResetCreditSnapshot.resolve(
+    liveCount: nil,
+    liveExpirations: nil,
+    cachedCount: 1,
+    cachedExpirations: [400]
+)
+precondition(preserved.count == 1)
+precondition(preserved.expirations == [400])
+precondition(preserved.isStale == true)
+
+private let explicitZero = ResetCreditSnapshot.resolve(
+    liveCount: 0,
+    liveExpirations: [400],
+    cachedCount: 1,
+    cachedExpirations: [400]
+)
+precondition(explicitZero.count == 0)
+precondition(explicitZero.expirations == [])
+precondition(explicitZero.isStale == false)
+
+private let unavailable = ResetCreditSnapshot.resolve(
+    liveCount: nil,
+    liveExpirations: nil,
+    cachedCount: nil,
+    cachedExpirations: nil
+)
+precondition(unavailable.count == nil)
+precondition(unavailable.expirations == nil)
+precondition(unavailable.isStale == false)
 
 let now = Date(timeIntervalSince1970: 100)
 let future = ResetCreditTimeline.futureExpirations([300, 50, 200, 200], now: now)
@@ -103,8 +139,13 @@ if result.returncode != 0:
 
 for required in (
     "let resetCreditExpirations: [Int]?",
+    "let resetCreditsStale: Bool?",
     '"availableResetCredits": normalize_reset_credit_count(reset_credits)',
     '"resetCreditExpirations": normalize_reset_credit_expirations(reset_credits)',
+    'send({"method": "account/rateLimits/read", "id": 3, "params": None})',
+    "cachedQuota: self.lastGoodInfo",
+    "cachedQuota: cached",
+    't("  旧数据", "  cached")',
     "menu.addItem(resetCreditsItem)",
     "private func setResetCreditsItem",
     "private func makeResetCreditMarker",

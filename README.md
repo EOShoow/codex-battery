@@ -122,7 +122,7 @@ The graphical forecast row uses three trend lines plus an expiry marker:
 - Solid line: actual weekly usage recorded in local Codex snapshots
 - Colored dashed line: projected usage; green means comfortable, orange means close to empty, and red means projected to run out before reset
 
-When full-reset credits are available, the menu shows their count in a separate row. Open that row to see every exact expiry date returned by the API; if the count exceeds the valid dates, the submenu says how many dates are unavailable. The nearest group that expires within the current weekly chart range is marked on the time axis with an orange vertical line and date, turning red inside 24 hours. Expiries after the weekly reset remain in the expanded list instead of stretching and distorting the forecast axis.
+When full-reset credits are available, the menu shows their count in a separate row. Open that row to see every exact expiry date returned by the API; if the count exceeds the valid dates, the submenu says how many dates are unavailable. The nearest group that expires within the current weekly chart range is marked on the time axis with an orange vertical line and date, turning red inside 24 hours. Expiries after the weekly reset remain in the expanded list instead of stretching and distorting the forecast axis. If the app-server temporarily returns this field as `null`, Codex Battery retries once and then keeps the last known count with a `cached` marker. Only an explicit zero clears the count.
 
 The estimate separates *when* you normally work from *how quickly* you normally use quota. It collapses current-window snapshots into 5-minute buckets and turns 15-minute local activity buckets from the previous 28 complete calendar days into a weekday-by-hour profile. Historical pace uses a robust median of recent quota cycles and prefers cycles lasting at least three days, so short full-reset sprints do not dominate the next forecast. The current cycle only gains influence after sustained evidence; without a usable historical baseline, the first 12 hours remain in `Building forecast` instead of declaring an early exhaustion date.
 
@@ -189,7 +189,7 @@ Current known baseline:
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
 - Supports the bundled app-server in both `/Applications/ChatGPT.app` and the legacy `/Applications/Codex.app`
 - Reads `~/.codex/state_5.sqlite`
-- Reads the available full-reset count from `rateLimitResetCredits.availableCount` and only extracts `expiresAt` from available credits for the local date list and timeline marker; the center stays blank when that live field is unavailable
+- Reads the available full-reset count from `rateLimitResetCredits.availableCount` and only extracts `expiresAt` from available credits for the local date list and timeline marker; a temporary `null` response preserves the last known count as `cached`, while the center stays blank if no trustworthy count has ever been read
 - Reads recent rollout logs that contain `token_count.rate_limits`
 
 If it breaks after a Codex update, please open an issue with your Codex version, macOS version, and the error text shown by the menu. Do not paste private rollout logs unless you have reviewed and redacted them.
