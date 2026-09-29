@@ -186,8 +186,9 @@ Current known baseline:
 - Verified with Codex Desktop `26.519.31651` as of 2026-05-22
 - Verified with Codex in ChatGPT for macOS as of 2026-07-10
 - Verified with the weekly-only quota response shape in Codex for macOS as of 2026-07-14
+- Verified live quota and full-reset credits with ChatGPT for macOS `26.924.22138` as of 2026-09-29
 - Reads quota through local `codex app-server` method `account/rateLimits/read`
-- Supports the bundled app-server in both `/Applications/ChatGPT.app` and the legacy `/Applications/Codex.app`
+- Supports the bundled app-server at `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`, with fallback to the older `Contents/Resources/codex` layout in ChatGPT and Codex apps
 - Reads `~/.codex/state_5.sqlite`
 - Reads the available full-reset count from `rateLimitResetCredits.availableCount` and only extracts `expiresAt` from available credits for the local date list and timeline marker; a temporary `null` response preserves the last known count as `cached`, while the center stays blank if no trustworthy count has ever been read
 - Reads recent rollout logs that contain `token_count.rate_limits`

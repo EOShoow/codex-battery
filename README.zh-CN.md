@@ -181,8 +181,9 @@ Codex Battery 依赖 Codex Desktop 的本机 app-server 协议和本地状态格
 - 已在 2026-05-22 的 Codex Desktop `26.519.31651` 上验证
 - 已在 2026-07-10 的 ChatGPT for macOS 内置 Codex 上验证
 - 已在 2026-07-14 的 Codex for macOS 单周额度返回结构上验证
+- 已在 2026-09-29 的 ChatGPT for macOS `26.924.22138` 上验证实时额度和完整重置次数
 - 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度
-- 同时兼容 `/Applications/ChatGPT.app` 内置 app-server 和旧版 `/Applications/Codex.app`
+- 支持 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex` 内置 app-server，并保留 ChatGPT 和 Codex 应用中旧版 `Contents/Resources/codex` 路径的回退兼容
 - 读取 `~/.codex/state_5.sqlite`
 - 从 `rateLimitResetCredits.availableCount` 读取可用完整重置次数，并只提取可用 credit 的 `expiresAt` 用于本机日期列表和时间轴标记；临时 `null` 会沿用最近可信次数并标记“旧数据”，从未读到可信次数时中心才留空
 - 读取包含 `token_count.rate_limits` 的近期 rollout 日志

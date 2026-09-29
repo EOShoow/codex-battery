@@ -2061,6 +2061,7 @@ session_index_path = home / ".codex" / "session_index.jsonl"
 global_state_path = home / ".codex" / ".codex-global-state.json"
 config_path = home / ".codex" / "config.toml"
 codex_binary_candidates = [
+    pathlib.Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"),
     pathlib.Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
     pathlib.Path("/Applications/Codex.app/Contents/Resources/codex"),
 ]
