@@ -981,6 +981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
+    private let tiboResetMenu = TiboResetMenuController()
     private let fiveHourItem = NSMenuItem(title: "5h -", action: nil, keyEquivalent: "")
     private let weekItem = NSMenuItem(title: "1w -", action: nil, keyEquivalent: "")
     private let resetCreditsItem = NSMenuItem(title: "Resets -", action: nil, keyEquivalent: "")
@@ -1036,6 +1037,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(activityItem)
         menu.addItem(updatedItem)
         menu.addItem(.separator())
+        menu.addItem(tiboResetMenu.item)
+        menu.addItem(.separator())
         menu.addItem(iconStyleItem)
         menu.addItem(refreshItem)
         menu.addItem(syncOnOpenItem)
@@ -1063,6 +1066,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func performRefresh(includeDetails: Bool, reschedule: Bool) {
         guard !isRefreshing else { return }
         isRefreshing = true
+        tiboResetMenu.quotaRefreshDidStart()
         if includeDetails {
             lastDetailAttemptAt = Date()
         }
@@ -1150,6 +1154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        tiboResetMenu.menuWillOpen()
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
         configureIconStyleMenu()
         guard !isRefreshing else { return }

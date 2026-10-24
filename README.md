@@ -15,7 +15,7 @@ Codex Battery turns Codex usage limits into a compact menu bar signal:
 - Icon style: choose **Rounded dice (reset credits)** or **Round bolt (service tier)** from the `Icon Style` menu; the choice is remembered locally
 - Menu details: reset times, available full-reset credits and their expiry dates, today's token burn, quota burn reference, weekly budget forecast, the top active Codex thread, recent background activity, and the data timestamp
 
-It is local-only, lightweight, and designed for people who keep checking quota while doing long agentic work.
+It is local-first, lightweight, and designed for people who keep checking quota while doing long agentic work. An optional Tibo announcement check is disabled by default.
 
 ## Why
 
@@ -83,6 +83,8 @@ The login item is installed at:
 
 Codex Battery is not signed with a paid Apple Developer ID yet, so macOS may show it as coming from an "unidentified developer" in Login Items or Gatekeeper prompts.
 
+Source builds use local ad-hoc signing for the complete app bundle, without Apple Developer ID signing or notarization, so this warning may still appear.
+
 That warning is about Apple code-signing identity, not about data collection. This project is open source, installs from this repository, asks the local Codex app-server for quota status, and reads local Codex state under `~/.codex` for fallback statistics.
 
 If you are cautious, inspect the source first and install from source with `./install.sh`. The current Homebrew formula also builds the app locally from this repository instead of downloading a closed binary.
@@ -136,6 +138,18 @@ Codex may temporarily return only the weekly window. In that case Codex Battery 
 
 If a row is truncated, hover it to see the full value in a tooltip.
 
+## Tibo Reset Announcements (Experimental)
+
+Open the `Tibo` submenu and enable `Low-power check (about every 2h)` to check public posts by [Tibo (@thsottiaux)](https://x.com/thsottiaux) through an RSS feed. No X API key or login is needed. `Check now` runs a manual check; you can also set a custom HTTPS RSS 2.0 or Atom feed for the same account, or restore the default source.
+
+The default source is [`nitter.kareem.one/thsottiaux/rss`](https://nitter.kareem.one/thsottiaux/rss), an independent third-party service. It may become unavailable, delayed, or incomplete. A failed check keeps the last successful result and shows the failure separately. If the newest post in the feed is over seven days old, the menu marks its content as old; fetching a feed does not establish that its upstream timeline is current.
+
+After a successful check, the next check becomes due in two hours. It runs alongside the next existing quota refresh, with no extra timer and no change to the quota refresh schedule. With the default 5-minute active / 30-minute idle refresh intervals, it may run a little after that due time; longer custom intervals or sleep can delay it further. Opening the menu offers a check only when it actually triggers a quota refresh. `Next due (with quota refresh)` shows eligibility, not a guaranteed fetch time.
+
+Enabling the feature or changing its source attempts a check immediately. Failed checks back off for 1, 2, 4, 8, then 12 hours, and retry with the next quota refresh after that due time; manual checks are limited to once per minute. The feature does not check while the Mac sleeps or the app is closed, does not wake the Mac, and does not replay missed checks. Sharing refresh opportunities avoids separate scheduled wakeups; actual power consumption has not been measured.
+
+Results distinguish reset mentions from planned resets and link to the original post. The first successful check establishes a baseline, so old posts do not appear as new announcements. Matching uses the post title's standalone `reset` / `resets` words; it does not infer context from a reply such as “landing tomorrow” or from quoted posts. A public announcement does not confirm that a reset credit has reached your account: quota and available credits continue to come from the local Codex account read.
+
 ## Refresh Behavior
 
 Codex Battery refreshes:
@@ -150,7 +164,7 @@ Opening the menu keeps the quota display aligned with the official panel: if the
 
 To avoid staying in the 30-minute idle wait after you start working, Codex Battery also runs a lightweight activity probe every 5 minutes. That probe only reads local state and recent rollout tails; it does not start the Codex app-server. If it sees idle turn into active, it triggers an account-quota refresh.
 
-Automatic 5-minute refreshes only read the official account quota. The detail scan used for today/top/forecast statistics runs at startup, on manual refresh, and at most once per hour in the background. It reads recent threads precisely and samples only a small number of older rollout tails per day to learn active hours without a full-history scan.
+Automatic 5-minute quota refreshes only read the official account quota. If the optional Tibo check is enabled and due, it uses the same refresh opportunity for its separate RSS request. The detail scan used for today/top/forecast statistics runs at startup, on manual refresh, and at most once per hour in the background. It reads recent threads precisely and samples only a small number of older rollout tails per day to learn active hours without a full-history scan.
 
 You can tune the automatic intervals:
 
@@ -162,7 +176,7 @@ defaults write local.codex.battery.menu activityProbeSeconds -int 300
 defaults write local.codex.battery.menu detailRefreshMinutes -int 60
 ```
 
-To keep power use low, regular automatic refreshes only ask the local Codex app-server for the current account quota. The less frequent detail refresh checks recent active threads and reads rollout tails for today/top/forecast statistics.
+To keep power use low, regular quota reads only ask the local Codex app-server for the current account quota. The less frequent detail refresh checks recent active threads and reads rollout tails for today/top/forecast statistics.
 
 When background Codex work is still running, the menu shows an `Activity` line such as `2 thread(s) active in 2m`. That is a reminder that quota may keep moving even if you are not actively typing in the current thread.
 
@@ -211,6 +225,8 @@ It also reads locally:
 - recent rollout log paths referenced by that database
 
 Thread titles are displayed locally so you can see which conversation is consuming tokens.
+
+The experimental Tibo announcement check is off by default. When enabled, it requests only the selected public RSS feed, without X API keys, cookies, local Codex data, or conversation logs. The feed provider receives your IP address and the requested account. Check history and announcement results are cached locally. You can disable the check at any time; there is no separate background service or server.
 
 ## Update
 
