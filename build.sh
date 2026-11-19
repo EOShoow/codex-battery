@@ -17,6 +17,7 @@ swiftc "$ROOT"/Sources/*.swift \
 
 cp "$ROOT/Info.plist" "$CONTENTS/Info.plist"
 cp "$ROOT/Resources/CodexBattery.icns" "$RESOURCES/CodexBattery.icns"
+cp "$ROOT/Resources/task_runner.py" "$RESOURCES/task_runner.py"
 
 # Seal the complete local bundle after copying resources; this is not Developer ID signing.
 codesign --force --sign - "$APP"

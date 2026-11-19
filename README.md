@@ -4,7 +4,7 @@
 
 <img src="assets/app-icon.png" width="96" alt="Codex Battery app icon">
 
-A tiny macOS menu bar quota indicator for Codex.
+A tiny macOS menu bar quota indicator for Codex, with optional Claude Code account quotas.
 
 ![Codex Battery menu bar screenshot](assets/codex-battery-en.png)
 
@@ -138,6 +138,40 @@ Codex may temporarily return only the weekly window. In that case Codex Battery 
 
 If a row is truncated, hover it to see the full value in a tooltip.
 
+## Claude Code and Quota Balance (Experimental)
+
+In the **Claude Code** submenu, **Enable account quota checks** and **Sync resets from Claude Desktop** are separate options. Both are off by default. The original Codex menu and weekly trend chart are shown when both are off. Enabling either adds **Split digits** to **Icon Style**. The left half shows Codex and the right half shows Claude. The rings show remaining quota, dots indicate an unavailable reading, and an underline marks a reset expiring within 3 days. The Claude digit totals available resets, including scoped grants such as Fable.
+
+Model-specific weekly limits that Claude returns (for example Fable) appear after the weekly figure in the panel, as in `84% · Fable 70%`; hover for the reset time, and the submenu lists them too. They come from the model-scoped rows of the response's `limits` list, which is equally undocumented: an unreadable row pauses the balance advice instead of being ignored.
+
+The top panel compares each provider's 5-hour and weekly remaining quota, available resets, weekly reset, and data timestamp. Hover a 5-hour value for its reset time. Redeem resets by hand in each provider's client. Hover the reset total or open the submenu for recognized reset kinds, remaining counts, and expiry dates, including Fable resets. A missing count appears as `—`. The **Split digits** icon shows both providers.
+
+After choosing **Sync resets from Claude Desktop**, allow **CodexBattery** in macOS **System Settings → Privacy & Security → Device Control and Data Access** (**Accessibility** on older versions), then open **Settings → Usage** in **Claude Desktop**. Codex Battery watches for the usage page while Claude Desktop is in front and checks once for an open usage page at startup or when you open the menu. The total appears in the menu and on the right of the **Split digits** icon. The last reading stays visible after you close the page. Hover to see when it synced. Resets with known expiry dates are deducted when they expire. This read-only sync works independently of account quota checks and stores only counts, recognized reset kinds, expiry dates, and the sync time. Changes to the page layout or language may require an update. macOS may ask you to grant access again after installing a new locally signed build.
+
+Choose `Claude Code: Off` → `Enable account quota checks` to reuse the local Claude Code login for account usage metadata requests to Anthropic. The quota check runs separately from model tasks and needs no API key. The local login can expire while Code in the Claude desktop app still works. If the panel reports an expired login, renew Claude Code sign-in in the terminal. Missing, expired, usage-forbidden, or inaccessible credentials each get their own message. The app does not refresh OAuth tokens or prompt for Keychain access.
+
+Percentages stay separate and are never added or converted through token counts. Advice first checks for a window at or below 10%, then compares `weekly headroom = remaining percentage − days to reset × 100/7`. A gap of at least 10 percentage points favors a provider only when its reported windows are all above 20%. This is an even-pacing reference, not equivalent compute capacity, task suitability, or a guarantee that quota will last. Model-specific Claude weekly limits appear in its submenu; tight or expired model limits pause recommendations.
+
+Advice pauses if either read fails, a snapshot exceeds 15 minutes, a weekly window is missing, or a reset has elapsed. The comparison panel marks elapsed windows as needing an update instead of assuming full quota. Failed reads retain the last in-memory snapshot with a stale label; authentication failures clear Claude data. No Claude daily-token total is provided. The latest menu state is stored in a private local diagnostic file described under Privacy.
+
+When enabled, the weekly pace view adds a bar for the Claude weekly quota and one for each model-specific weekly quota that reports a reading (for example Fable), below the Codex bar. Each bar uses its own week. Claude bars use the weekly percentages saved by successful checks and extend the current week's average pace to the reset. Unlike Codex, they are not weighted by activity hours, show no projection in the first 6 hours of a week, and are marked stale after 15 minutes without an update. Unused model windows (0% and no reset time) are not shown and do not pause the balance advice. If the account returns a weekly usage breakdown (such as Claude Code, chat, or Cowork), the submenu lists the non-zero parts and their share of the weekly limit; they are parts of the same weekly quota, not separate limits, so they get no pace bars of their own.
+
+Automatic account quota checks share existing refreshes and menu opens, at least 5 minutes apart after success. Idle scheduling or sleep can delay them. Manual successful checks are at least 60 seconds apart. Failed requests back off for 5, 10, 20, 40, then 60 minutes. HTTP 429 pauses for at least one hour and honors `Retry-After` up to 24 hours. Server cooldowns persist across toggles and relaunches. After a local credential error, the app re-reads credentials at an existing refresh opportunity at least 5 minutes later and resumes checks once the login is renewed. Manual checks still honor request spacing and server cooldowns.
+
+Account quota checks use the undocumented OAuth usage endpoint `https://api.anthropic.com/api/oauth/usage`, whose response format may change. The server can withhold reset details (reason `surface`), in which case the menu can use the desktop reading. Only the account quota request carries the existing access token. Anthropic receives your IP and authenticated usage request. Account quota checks are off by default.
+
+## Unified Task Entry (Experimental)
+
+After enabling Claude account quota checks, open `New task: automatic routing…`, select a local working folder, enter a task, then choose `Start task (one session)`. This uses the selected provider's model quota. Read-only analysis is the default; project file edits require selecting that mode. Quota is checked again at submission. Model and effort settings remain managed by the underlying tools.
+
+Automatic selection follows the pacing rules above and alternates from the last dispatch when neither provider is favored. Both quotas must be fresh and reliable in automatic mode; missing, stale or tight quotas pause dispatch. A manual provider choice checks only that provider. This version does not infer model suitability from task content or take over existing desktop chats.
+
+Each submission launches one independent local CLI session, for up to 15 minutes. A process lock allows only one task submitted by this tool at a time, including across app restarts. Stop, timeout, or app exit terminates that session and its children. Failures never cause automatic retries or resubmission to another provider; existing file edits are not rolled back. The runtime limit is not a token or spending cap.
+
+Codex uses its native read-only or workspace-write sandbox. Claude uses `--restricted` with file read/edit tools confined to the working folder, no extra MCP servers or custom hooks, and no Bash. Choose Codex for builds, tests, or shell commands. Neither uses an all-permissions bypass. Claude flags were checked against the installed `2.1.325` help; other versions may require compatibility changes.
+
+Results are stored in `~/Library/Application Support/CodexBattery/tasks/`, accessible from the task window. The launcher uses ephemeral CLI sessions rather than creating or continuing desktop chats. It does not install CLIs or change global configuration. Common inherited API-key environment variables are removed, but custom CLI configuration can still affect the model and billing path; quota comparisons apply to the corresponding subscription logins.
+
 ## Tibo Reset Announcements (Experimental)
 
 Open the `Tibo` submenu and enable `Low-power check (about every 2h)` to check public posts by [Tibo (@thsottiaux)](https://x.com/thsottiaux) through an RSS feed. No X API key or login is needed. `Check now` runs a manual check; you can also set a custom HTTPS RSS 2.0 or Atom feed for the same account, or restore the default source.
@@ -217,7 +251,7 @@ If it breaks after a Codex update, please open an issue with your Codex version,
 
 ## Privacy
 
-Codex Battery does not upload your rollout logs, thread contents, or statistics. For the primary quota number it starts the local Codex app-server and asks for `account/rateLimits/read`; depending on Codex internals, that app-server request may contact Codex/OpenAI using your existing Codex login, similar to opening the native quota panel.
+Quota monitoring does not upload your rollout logs, thread contents, or statistics. When you explicitly submit a task, the chosen CLI sends the task and relevant project content it reads to its provider. For the primary quota number it starts the local Codex app-server and asks for `account/rateLimits/read`; depending on Codex internals, that app-server request may contact Codex/OpenAI using your existing Codex login, similar to opening the native quota panel.
 
 It also reads locally:
 
@@ -225,6 +259,10 @@ It also reads locally:
 - recent rollout log paths referenced by that database
 
 Thread titles are displayed locally so you can see which conversation is consuming tokens.
+
+Claude weekly history is kept in `~/Library/Application Support/CodexBattery/claude-usage-history.json`, readable/writable only by the current user. It holds weekly window names, reset times, check times, and used percentages only, with no tokens or response bodies, and old samples are replaced when a new week starts. The latest comparison-panel text, update time, this process's Claude request count, model-window readings, Claude reset kinds, remaining counts and expiry times (no reset ids), and the last check outcome code (such as `credential_expired`, `http_401`, or `ok`) are kept in `~/Library/Caches/CodexBattery/quota-status.json`, readable/writable only by the current user. This local diagnostic file has no credentials or conversation text and retains no history. Task output and status are stored in the local task directory above, also with private permissions; they may contain project content and should be reviewed before sharing.
+
+Claude account checks use the network and credential scope described above. When enabled, they prefer the macOS `Claude Code-credentials` Keychain item, falling back to `~/.claude/.credentials.json` only if that item is absent. Only the existing access token is used; no token-refresh endpoint is called. Raw credentials are never written to the project or preferences.
 
 The experimental Tibo announcement check is off by default. When enabled, it requests only the selected public RSS feed, without X API keys, cookies, local Codex data, or conversation logs. The feed provider receives your IP address and the requested account. Check history and announcement results are cached locally. You can disable the check at any time; there is no separate background service or server.
 

@@ -274,6 +274,8 @@ assert base_rate < trend["rate"] <= base_rate * 1.7
 
 for required in (
     "final class WeeklyForecastView: NSView",
+    "PaceBarsView(",
+    "private func codexPaceRow",
     "weeklyTrendRatePctPerHour",
     "weeklyTrendConfidence",
     "weeklyTrendPoints",

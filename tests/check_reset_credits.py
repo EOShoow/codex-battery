@@ -150,6 +150,7 @@ for required in (
     "private func setResetCreditsItem",
     "private func makeResetCreditMarker",
     "view.resetCreditMarker = presentation.resetCreditMarker",
+    't("；\\($0.label)", "; \\($0.label)")',
     "最近到期",
     "未返回到期日期",
 ):

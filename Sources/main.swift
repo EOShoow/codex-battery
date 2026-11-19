@@ -4,12 +4,18 @@ import Foundation
 fileprivate enum IconStyle: String {
     case resetCredits
     case serviceTier
+    case dualResets
 }
 
 final class QuotaIconView: NSView {
     var fiveHour: Int?
     var week: Int?
     var availableResetCredits: Int?
+    var resetCreditsExpiringSoon = false
+    /// Claude Code side of the split-digits style; nil means no reading, drawn as a dotted half.
+    var claudeWeek: Int?
+    var claudeResetCredits: Int?
+    var claudeResetsExpiringSoon = false
     var serviceTier = "standard"
     fileprivate var style: IconStyle = .resetCredits
     var tooltipText = "Codex quota" {
@@ -34,6 +40,79 @@ final class QuotaIconView: NSView {
             drawResetCreditsIcon()
         case .serviceTier:
             drawServiceTierIcon()
+        case .dualResets:
+            drawDualResetsIcon()
+        }
+    }
+
+    /// Left half is Codex, right half is Claude Code: each half-ring is that provider's weekly quota
+    /// and the digit inside is its own stock of manually redeemable resets.
+    private func drawDualResetsIcon() {
+        let ring = NSRect(x: bounds.midX - 9.5, y: bounds.midY - 8.5, width: 19, height: 17)
+        drawHalfRing(in: ring, right: false, remaining: week ?? fiveHour)
+        drawHalfRing(in: ring, right: true, remaining: claudeWeek)
+        NSColor.labelColor.withAlphaComponent(0.3).setFill()
+        NSBezierPath(roundedRect: NSRect(x: bounds.midX - 0.4, y: bounds.midY - 4.8, width: 0.8, height: 9.6),
+                     xRadius: 0.4, yRadius: 0.4).fill()
+        drawResetDigit(availableResetCredits, centerX: bounds.midX - 4.4, underline: resetCreditsExpiringSoon)
+        drawResetDigit(claudeResetCredits, centerX: bounds.midX + 4.4, underline: claudeResetsExpiringSoon)
+    }
+
+    /// Fills from the bottom centre up the outer edge, so the two halves compare by height.
+    private func drawHalfRing(in rect: NSRect, right: Bool, remaining: Int?) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let radius: CGFloat = 5.0
+        let gap: CGFloat = 1.7
+        let side: CGFloat = right ? 1 : -1
+        let edge = right ? rect.maxX : rect.minX
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.midX + side * gap, y: rect.minY))
+        path.addLine(to: CGPoint(x: edge - side * radius, y: rect.minY))
+        path.addArc(tangent1End: CGPoint(x: edge, y: rect.minY),
+                    tangent2End: CGPoint(x: edge, y: rect.minY + radius), radius: radius)
+        path.addLine(to: CGPoint(x: edge, y: rect.maxY - radius))
+        path.addArc(tangent1End: CGPoint(x: edge, y: rect.maxY),
+                    tangent2End: CGPoint(x: edge - side * radius, y: rect.maxY), radius: radius)
+        path.addLine(to: CGPoint(x: rect.midX + side * gap, y: rect.maxY))
+        let length = 2 * (rect.width / 2 - gap - radius) + (rect.height - 2 * radius) + .pi * radius
+
+        context.saveGState()
+        context.setLineWidth(1.5)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.addPath(path)
+        if remaining == nil {
+            // No reading: a dotted track, so it is not mistaken for an exhausted quota.
+            context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.3).cgColor)
+            context.setLineDash(phase: 0, lengths: [0.01, 2.7])
+        } else {
+            context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.1).cgColor)
+        }
+        context.strokePath()
+        let clamped = max(0, min(100, remaining ?? 0))
+        if clamped > 0 {
+            context.addPath(path)
+            context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.86).cgColor)
+            context.setLineDash(phase: 0, lengths: clamped < 100 ? [length * CGFloat(clamped) / 100, length * 2] : [])
+            context.strokePath()
+        }
+        context.restoreGState()
+    }
+
+    private func drawResetDigit(_ count: Int?, centerX: CGFloat, underline: Bool) {
+        guard let count else { return }
+        let size: CGFloat = 9.5
+        let base = NSFont.systemFont(ofSize: size, weight: .bold)
+        let font = base.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: size) } ?? base
+        let text = NSAttributedString(
+            string: count > 9 ? "+" : String(max(0, count)),
+            attributes: [.font: font, .foregroundColor: NSColor.labelColor.withAlphaComponent(count > 0 ? 0.92 : 0.35)]
+        )
+        let textSize = text.size()
+        text.draw(at: NSPoint(x: centerX - textSize.width / 2, y: bounds.midY - textSize.height / 2 + 0.2))
+        if underline && count > 0 {
+            NSColor.labelColor.withAlphaComponent(0.9).setFill()
+            NSRect(x: centerX - 2.2, y: bounds.midY - size * 0.47 - 1.0, width: 4.4, height: 0.9).fill()
         }
     }
 
@@ -982,6 +1061,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let iconView = QuotaIconView(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
     private let menu = NSMenu()
     private let tiboResetMenu = TiboResetMenuController()
+    private let quotaBalanceMenu: QuotaBalanceMenuController
+    private var claudeDesktopResetMonitor: ClaudeDesktopResetMonitor?
+    private var lastCodexForecast: WeeklyForecastPresentation?
+    private var lastCodexQuotaReliable = false
+    private var codexTooltip = ""
+    private var lastCodexExtras: [String] = []
+    private var taskLauncher: TaskLauncherMenuController?
     private let fiveHourItem = NSMenuItem(title: "5h -", action: nil, keyEquivalent: "")
     private let weekItem = NSMenuItem(title: "1w -", action: nil, keyEquivalent: "")
     private let resetCreditsItem = NSMenuItem(title: "Resets -", action: nil, keyEquivalent: "")
@@ -1008,6 +1094,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastObservedActiveWindowSeconds = 120
     private var pendingScheduledRefresh = false
 
+    init(quotaBalanceMenu: QuotaBalanceMenuController = QuotaBalanceMenuController(
+        diagnosticURL: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/CodexBattery/quota-status.json"),
+        historyURL: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/CodexBattery/claude-usage-history.json")
+    )) {
+        self.quotaBalanceMenu = quotaBalanceMenu
+        super.init()
+    }
+
     private func t(_ zh: String, _ en: String) -> String {
         useChinese ? zh : en
     }
@@ -1025,32 +1121,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureActionItem(refreshItem, title: t("刷新", "Refresh"), action: #selector(refreshNow))
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
         configureActionItem(quitItem, title: t("退出", "Quit"), action: #selector(quit))
-        configureIconStyleMenu()
         menu.delegate = self
-        menu.addItem(fiveHourItem)
-        menu.addItem(weekItem)
-        menu.addItem(resetCreditsItem)
-        menu.addItem(todayItem)
-        menu.addItem(quotaBurnItem)
-        menu.addItem(forecastItem)
-        menu.addItem(topItem)
-        menu.addItem(activityItem)
-        menu.addItem(updatedItem)
+        quotaBalanceMenu.onChange = { [weak self] in
+            self?.taskLauncher?.quotaDidChange()
+            self?.renderForecast()
+            self?.applyClaudeToIcon()
+        }
+        quotaBalanceMenu.onSettingsChange = { [weak self] in self?.applyClaudeSettings() }
+        applyClaudeSettings()
+        statusItem.menu = menu
+
+        performRefresh(includeDetails: true, reschedule: true)
+        startActivityProbeTimer()
+    }
+
+    private func applyClaudeSettings() {
+        if quotaBalanceMenu.desktopSyncEnabled {
+            if claudeDesktopResetMonitor == nil {
+                claudeDesktopResetMonitor = ClaudeDesktopResetMonitor { [weak self] reading in
+                    self?.quotaBalanceMenu.updateDesktopResets(reading)
+                }
+            }
+        } else {
+            claudeDesktopResetMonitor = nil
+        }
+        if quotaBalanceMenu.enabled, taskLauncher == nil {
+            taskLauncher = TaskLauncherMenuController(
+                quotas: { [weak self] in self?.quotaBalanceMenu.currentQuotas ?? (nil, nil, false, false) },
+                refresh: { [weak self] in self?.refreshNow() }
+            )
+        }
+        taskLauncher?.setEnabled(quotaBalanceMenu.enabled)
+        configureMenu()
+        configureIconStyleMenu()
+        iconView.style = iconStyle
+        if quotaBalanceMenu.active {
+            updateQuotaBalance(reliable: lastCodexQuotaReliable)
+        } else {
+            renderForecast()
+            applyClaudeToIcon()
+        }
+    }
+
+    private func configureMenu() {
+        menu.removeAllItems()
+        if quotaBalanceMenu.active {
+            menu.addItem(quotaBalanceMenu.item)
+            menu.addItem(forecastItem)
+            if let taskLauncher, !taskLauncher.item.isHidden { menu.addItem(taskLauncher.item) }
+            menu.addItem(.separator())
+            let codexHeading = NSMenuItem(title: "Codex", action: nil, keyEquivalent: "")
+            codexHeading.isEnabled = false
+            menu.addItem(codexHeading)
+            menu.addItem(fiveHourItem)
+            menu.addItem(resetCreditsItem)
+            menu.addItem(activityItem)
+        } else {
+            menu.addItem(fiveHourItem)
+            menu.addItem(weekItem)
+            menu.addItem(resetCreditsItem)
+            menu.addItem(todayItem)
+            menu.addItem(quotaBurnItem)
+            menu.addItem(forecastItem)
+            menu.addItem(topItem)
+            menu.addItem(activityItem)
+            menu.addItem(updatedItem)
+            if let taskLauncher, !taskLauncher.item.isHidden { menu.addItem(taskLauncher.item) }
+        }
         menu.addItem(.separator())
+        menu.addItem(quotaBalanceMenu.settingsItem)
         menu.addItem(tiboResetMenu.item)
         menu.addItem(.separator())
         menu.addItem(iconStyleItem)
         menu.addItem(refreshItem)
         menu.addItem(syncOnOpenItem)
         menu.addItem(quitItem)
-        statusItem.menu = menu
-
-        refreshNow()
-        startActivityProbeTimer()
     }
 
     @objc private func refreshNow() {
-        performRefresh(includeDetails: true, reschedule: true)
+        performRefresh(includeDetails: true, reschedule: true, manual: true)
     }
 
     @objc private func refreshScheduled() {
@@ -1063,10 +1212,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         performRefresh(includeDetails: detailsAreDue, reschedule: true)
     }
 
-    private func performRefresh(includeDetails: Bool, reschedule: Bool) {
+    private func performRefresh(includeDetails: Bool, reschedule: Bool, manual: Bool = false) {
         guard !isRefreshing else { return }
         isRefreshing = true
         tiboResetMenu.quotaRefreshDidStart()
+        quotaBalanceMenu.refreshIfDue(manual: manual)
         if includeDetails {
             lastDetailAttemptAt = Date()
         }
@@ -1140,6 +1290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 } else {
                     self.render(info)
                 }
+                self.updateQuotaBalance(reliable: quotaInfo.ok && info.quotaSource == "app_server")
                 self.isRefreshing = false
                 if self.pendingScheduledRefresh {
                     self.pendingScheduledRefresh = false
@@ -1155,6 +1306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         tiboResetMenu.menuWillOpen()
+        claudeDesktopResetMonitor?.syncOpenPage()
+        if quotaBalanceMenu.active { quotaBalanceMenu.menuWillOpen() }
         configureActionItem(syncOnOpenItem, title: syncOnOpenTitle(), action: #selector(toggleSyncOnOpen))
         configureIconStyleMenu()
         guard !isRefreshing else { return }
@@ -1172,6 +1325,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard fullSyncEnabled || !snapshotIsFresh else { return }
         lastMenuRefreshAttemptAt = now
         performRefresh(includeDetails: fullSyncEnabled, reschedule: false)
+    }
+
+    private func updateQuotaBalance(reliable: Bool) {
+        lastCodexQuotaReliable = reliable
+        guard quotaBalanceMenu.active else { return }
+        guard let info = lastGoodInfo, let timestamp = Self.parseQuotaTimestamp(info.timestamp) else {
+            quotaBalanceMenu.updateCodex(nil, reliable: false)
+            return
+        }
+        func window(_ used: Double?, _ reset: Int?) -> ProviderQuotaWindow? {
+            guard let used, used.isFinite, (0...100).contains(used) else { return nil }
+            return ProviderQuotaWindow(used: used, resetsAt: reset.map { Date(timeIntervalSince1970: Double($0)) })
+        }
+        quotaBalanceMenu.updateCodex(
+            ProviderQuotaSnapshot(checkedAt: timestamp, fiveHour: window(info.primaryUsed, info.primaryReset),
+                                  week: window(info.secondaryUsed, info.secondaryReset),
+                                  resets: info.availableResetCredits.map {
+                                      ProviderResetStock(count: max(0, $0),
+                                                         expirations: ResetCreditTimeline.futureExpirations(info.resetCreditExpirations))
+                                  }),
+            reliable: reliable
+        )
+    }
+
+    /// Claude Code's half of the split-digits icon and its tooltip line; other styles ignore the values.
+    private func applyClaudeToIcon() {
+        guard quotaBalanceMenu.active else {
+            iconView.claudeWeek = nil
+            iconView.claudeResetCredits = nil
+            iconView.claudeResetsExpiringSoon = false
+            iconView.tooltipText = codexTooltip
+            iconView.needsDisplay = true
+            return
+        }
+        let now = Date()
+        let quotas = quotaBalanceMenu.currentQuotas
+        let claude = quotas.claude
+        let resetStock = quotaBalanceMenu.claudeResetStock(at: now)
+        let desktopResets = quotaBalanceMenu.desktopResets
+        func remaining(_ window: ProviderQuotaWindow?) -> Int? {
+            guard let window else { return nil }
+            return window.resetsAt.map { $0 <= now } == true ? 100 : window.remaining
+        }
+        iconView.claudeWeek = remaining(claude?.week) ?? remaining(claude?.fiveHour)
+        iconView.claudeResetCredits = resetStock?.count
+        iconView.claudeResetsExpiringSoon = resetStock?.expiringSoon(at: now) ?? false
+        var lines = [codexTooltip]
+        if let claude {
+            var parts: [String] = []
+            if let five = remaining(claude.fiveHour) { parts.append(t("5小时剩余 \(five)%", "5h left \(five)%")) }
+            if let week = remaining(claude.week) { parts.append(t("1周剩余 \(week)%", "1w left \(week)%")) }
+            for (key, window) in claude.modelWindows.sorted(by: { $0.key < $1.key })
+            where !window.notStarted && window.isCurrent(at: now) {
+                parts.append("\(ClaudeForecast.displayName(key)) \(window.remaining)%")
+            }
+            if desktopResets == nil, let resetStock { parts.append(t("可用重置 \(resetStock.count)", "resets \(resetStock.count)")) }
+            lines.append("Claude Code: " + parts.joined(separator: " · ") + (quotas.claudeReliable ? "" : t("  旧数据", "  cached")))
+        }
+        if let desktopResets, let resetStock {
+            lines.append(QuotaBalanceView.desktopSyncLabel(desktopResets.syncedAt, chinese: useChinese) + " · "
+                         + t("可用重置 \(resetStock.count)", "\(resetStock.count) resets"))
+        }
+        iconView.tooltipText = lines.filter { !$0.isEmpty }.joined(separator: "\n")
+        iconView.needsDisplay = true
     }
 
     private static func parseQuotaTimestamp(_ timestamp: String?) -> Date? {
@@ -1192,6 +1409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             iconView.fiveHour = nil
             iconView.week = nil
             iconView.availableResetCredits = nil
+            iconView.resetCreditsExpiringSoon = false
             iconView.serviceTier = "standard"
             iconView.style = iconStyle
             iconView.needsDisplay = true
@@ -1203,11 +1421,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setResetCreditsItem(count: nil, expirations: [])
             setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: "-")
             setInfoItem(quotaBurnItem, label: t("额度油耗", "Quota burn"), value: "-")
-            setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
+            lastCodexForecast = nil
+            renderForecast()
             setInfoItem(topItem, label: "Top", value: "-")
             setInfoItem(activityItem, label: t("后台活动", "Activity"), value: "-")
             setInfoItem(updatedItem, label: t("数据于", "Data at"), value: "-")
-            iconView.tooltipText = message
+            codexTooltip = message
+            applyClaudeToIcon()
             return
         }
 
@@ -1217,6 +1437,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         iconView.week = week
         let availableResetCredits = info.availableResetCredits.map { max(0, $0) }
         iconView.availableResetCredits = availableResetCredits
+        iconView.resetCreditsExpiringSoon = (availableResetCredits ?? 0) > 0 && ProviderResetStock(
+            count: availableResetCredits ?? 0,
+            expirations: ResetCreditTimeline.futureExpirations(info.resetCreditExpirations)
+        ).expiringSoon(at: Date())
         iconView.serviceTier = info.serviceTier ?? "standard"
         iconView.style = iconStyle
         iconView.needsDisplay = true
@@ -1230,6 +1454,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topThreadTokens = info.topThreadTokens.map { Self.formatCompact($0) } ?? "-"
         let activity = formatActivity(info)
         let dataAt = formatDataTimestamp(info.timestamp)
+        lastCodexExtras = [
+            t("今日消耗 \(today)", "Today burn \(today)"),
+            t("额度油耗 \(quotaBurn.value) · \(quotaBurn.detail)", "Quota burn \(quotaBurn.value) · \(quotaBurn.detail)"),
+            "Top \(info.topThread ?? "-") · \(topThreadTokens)",
+            t("数据于 \(dataAt)", "Data at \(dataAt)"),
+        ]
         let resetCredits = availableResetCredits.map(String.init) ?? "-"
         let resetCreditExpirations = ResetCreditTimeline.futureExpirations(info.resetCreditExpirations)
         let nearestCreditExpiry = resetCreditExpirations.first.map(formatResetCreditExpiry)
@@ -1274,11 +1504,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         setInfoItem(todayItem, label: t("今日消耗", "Today burn"), value: today)
         setQuotaBurnItem(quotaBurnItem, presentation: quotaBurn)
-        setWeeklyForecastItem(forecastItem, presentation: weeklyForecast)
+        lastCodexForecast = weeklyForecast
+        renderForecast()
         setInfoItem(topItem, label: "Top", value: topThread, detail: topThreadTokens)
         setInfoItem(activityItem, label: t("后台活动", "Activity"), value: activity)
         setInfoItem(updatedItem, label: t("数据于", "Data at"), value: dataAt)
-        iconView.tooltipText = detail
+        codexTooltip = detail
+        applyClaudeToIcon()
     }
 
     private func remainingPercentage(used: Double?, reset: Int?) -> Int? {
@@ -1455,7 +1687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               now < resetAt else {
             let summary = t("样本积累中", "Building forecast")
             let markerHint = resetCreditMarker.map {
-                t("，竖线标记\($0.label)", "; vertical marker: \($0.label)")
+                t("；\($0.label)", "; \($0.label)")
             } ?? ""
             return WeeklyForecastPresentation(
                 summary: summary,
@@ -1466,8 +1698,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 resetCreditMarker: resetCreditMarker,
                 tone: .secondaryLabelColor,
                 tooltip: t(
-                    "\(summary)。\(habitHint)实线为实际消耗，灰线为均匀预算线\(markerHint)。",
-                    "\(summary). \(habitHint) Solid is actual usage; gray is the even-budget line\(markerHint)."
+                    "\(summary)。\(habitHint)\(markerHint)",
+                    "\(summary). \(habitHint)\(markerHint)"
                 )
             )
         }
@@ -1531,14 +1763,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             tone = (rangeCrossesExhaustion || projectedRemaining < 15) ? .systemOrange : .systemGreen
         }
         let markerHint = resetCreditMarker.map {
-            t("，竖线标记\($0.label)", "; vertical marker: \($0.label)")
+            t("；\($0.label)", "; \($0.label)")
         } ?? ""
         let rangeHint = rangeCrossesExhaustion
             ? t("稳健区间跨过 100% 用完线，因此当前只提示风险，不给确定的提前天数。", "The robust range crosses the 100% exhaustion line, so this is shown as a risk rather than a certain early date.")
             : ""
         let tooltip = t(
-            "\(summary)，\(confidence)。\(habitHint)\(rangeHint)实线为实际消耗，彩色虚线为典型预测，灰线为均匀预算\(markerHint)。",
-            "\(summary), \(confidence). \(habitHint) \(rangeHint) Solid is actual usage, colored dash is the typical projection, gray is the even-budget line\(markerHint)."
+            "\(summary)，\(confidence)。\(habitHint)\(rangeHint)\(markerHint)",
+            "\(summary), \(confidence). \(habitHint) \(rangeHint)\(markerHint)"
         )
         return WeeklyForecastPresentation(
             summary: summary,
@@ -1552,7 +1784,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
     }
 
-    private func setWeeklyForecastItem(_ item: NSMenuItem, presentation: WeeklyForecastPresentation) {
+    /// One pace bar per quota: Codex keeps its activity-weighted forecast; Claude windows use average pace.
+    private func renderForecast() {
+        guard quotaBalanceMenu.active else {
+            if let lastCodexForecast {
+                setCodexForecastChart(forecastItem, presentation: lastCodexForecast)
+            } else {
+                setInfoItem(forecastItem, label: t("周预测", "Forecast"), value: "-")
+            }
+            return
+        }
+        let claudeRows = quotaBalanceMenu.enabled
+            ? ClaudeForecast.rows(history: quotaBalanceMenu.history, now: Date(), chinese: useChinese) : []
+        let codex = lastCodexForecast ?? WeeklyForecastPresentation(
+            summary: "-", confidence: "", actualPoints: [], currentPoint: nil, forecastPoint: nil,
+            resetCreditMarker: nil, tone: .secondaryLabelColor, tooltip: t("Codex 周额度暂不可用", "Codex weekly quota unavailable"))
+        setWeeklyForecastItem(forecastItem, presentation: codex, claudeRows: claudeRows)
+    }
+
+    private func codexPaceRow(_ presentation: WeeklyForecastPresentation) -> PaceRow {
+        let used = presentation.currentPoint.map { Double($0.y) * 100 }
+        var projected: Double?
+        if let point = presentation.forecastPoint {
+            projected = point.x >= 0.999 ? Double(point.y) * 100 : 100 // exhausts before reset
+        }
+        var endText = presentation.summary
+        if endText.hasPrefix("预计") { endText = String(endText.dropFirst(2)) }
+        let tooltip = ([presentation.tooltip, presentation.confidence.isEmpty ? "" : t("置信度：", "Confidence: ") + presentation.confidence]
+                       + lastCodexExtras).filter { !$0.isEmpty }.joined(separator: "\n")
+        return PaceRow(name: "Codex", color: .systemGray, used: used, projectedUsed: projected,
+                       pace: presentation.currentPoint.map { Double($0.x) }, endText: endText,
+                       tone: presentation.tone == .systemGreen ? .labelColor : presentation.tone, tooltip: tooltip)
+    }
+
+    private func setWeeklyForecastItem(_ item: NSMenuItem, presentation: WeeklyForecastPresentation,
+                                       claudeRows: [PaceRow] = []) {
+        let rows = [codexPaceRow(presentation)] + claudeRows
+        let view = PaceBarsView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: PaceBarsView.height(rows: rows.count)))
+        view.title = t("周预测", "Weekly pace")
+        view.legend = (t("已用", "used"), t("预计", "projected"), t("均匀配速", "even pace"))
+        view.rows = rows
+        view.installTooltips()
+        item.view = view
+    }
+
+    private func setCodexForecastChart(_ item: NSMenuItem, presentation: WeeklyForecastPresentation) {
         let view = WeeklyForecastView(frame: NSRect(x: 0, y: 0, width: Self.menuWidth, height: 82))
         view.title = t("周预测", "Forecast")
         view.summary = presentation.summary
@@ -1564,7 +1840,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         view.forecastPoint = presentation.forecastPoint
         view.resetCreditMarker = presentation.resetCreditMarker
         view.tone = presentation.tone
-        view.toolTip = presentation.tooltip
+        view.toolTip = presentation.tooltip + "\n" + t(
+            "实线为实际消耗，彩色虚线为典型预测，灰线为均匀预算。",
+            "Solid is actual usage, colored dash is the typical projection, and gray is the even-budget line."
+        )
         item.view = view
     }
 
@@ -1728,7 +2007,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var iconStyle: IconStyle {
-        IconStyle(rawValue: UserDefaults.standard.string(forKey: Self.iconStyleKey) ?? "") ?? .resetCredits
+        let preferred = IconStyle(rawValue: UserDefaults.standard.string(forKey: Self.iconStyleKey) ?? "") ?? .resetCredits
+        return preferred == .dualResets && !quotaBalanceMenu.active ? .resetCredits : preferred
     }
 
     private func configureIconStyleMenu() {
@@ -1751,6 +2031,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         serviceTierItem.state = iconStyle == .serviceTier ? .on : .off
         submenu.addItem(serviceTierItem)
 
+        if quotaBalanceMenu.active {
+            let dualResetsItem = NSMenuItem(
+                title: t("对半数字（Codex + Claude 重置）", "Split digits (Codex + Claude resets)"),
+                action: #selector(selectDualResetsIcon),
+                keyEquivalent: ""
+            )
+            dualResetsItem.target = self
+            dualResetsItem.state = iconStyle == .dualResets ? .on : .off
+            dualResetsItem.toolTip = t(
+                "半环表示各自周额度。数字是可用重置合计，Claude 的合计包含 Fable 等专用重置。下划线表示有重置 3 天内到期，虚线表示没有周额度读数。",
+                "The half-rings show weekly quota. Each digit is the total available resets, including scoped grants such as Fable on Claude. An underline marks a reset expiring within 3 days. Dots mean the weekly quota is unavailable."
+            )
+            submenu.addItem(dualResetsItem)
+        }
+
         iconStyleItem.title = t("图标样式", "Icon Style")
         iconStyleItem.submenu = submenu
     }
@@ -1761,6 +2056,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func selectServiceTierIcon() {
         setIconStyle(.serviceTier)
+    }
+
+    @objc private func selectDualResetsIcon() {
+        guard quotaBalanceMenu.active else { return }
+        setIconStyle(.dualResets)
     }
 
     private func setIconStyle(_ style: IconStyle) {
@@ -2040,7 +2340,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
+        taskLauncher?.terminate()
         NSApplication.shared.terminate(nil)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        taskLauncher?.terminate()
     }
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep today's token total while preventing the unstable comparison multiplier from returning."""
+"""Keep today's token total in the Codex menu and pace-bar tooltip without the comparison multiplier."""
 
 from pathlib import Path
 
@@ -12,6 +12,7 @@ readme_zh = (root / "README.zh-CN.md").read_text(encoding="utf-8")
 for required in (
     "private let todayItem",
     'label: t("今日消耗", "Today burn")',
+    't("今日消耗 \\(today)", "Today burn \\(today)")',  # shown in the Codex pace-bar tooltip
     "let todayTokens: Int?",
     '"todayTokens": today_tokens',
 ):
