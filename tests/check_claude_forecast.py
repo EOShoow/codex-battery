@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude weekly history, average-pace rows and the shared pace-bar view. Offline only."""
+"""Claude weekly history, activity-weighted projections and the shared pace-bar view. Offline only."""
 
 import os
 from pathlib import Path
@@ -106,7 +106,42 @@ precondition(abs((rows[0].pace ?? 0) - 1.2 / 7) < 0.001, "pace tick sits at the 
 precondition(rows[1].endText == "Out 2.0 days early", rows[1].endText)
 precondition(rows[1].runsOut && rows[1].tone == .systemRed)
 precondition(rows[0].color != rows[1].color)
+precondition(rows[0].tooltip.contains("While activity history builds"))
+
+// A Saturday snapshot in UTC+8, with work from 09:00 to 17:00 on weekdays.
+let iso = ISO8601DateFormatter()
+let saturday = iso.date(from: "2026-01-10T04:00:00Z")!
+let mondayMorning = iso.date(from: "2026-01-12T01:00:00Z")!
+let tuesdayEvening = iso.date(from: "2026-01-13T09:00:00Z")!
+var weights = [Double](repeating: 0, count: 168)
+for weekday in 0..<5 {
+    for hour in 9..<17 { weights[weekday * 24 + hour] = 1 }
+}
+let schedule = WeeklyActivitySchedule(weights: weights, timeZoneOffsetSeconds: 8 * 3600)!
+let weightedHistory = ClaudeUsageHistory(url: nil)
+weightedHistory.record(ProviderQuotaSnapshot(checkedAt: saturday, fiveHour: nil,
+    week: ProviderQuotaWindow(used: 40, resetsAt: mondayMorning),
+    modelWindows: ["seven_day_fable": ProviderQuotaWindow(used: 75, resetsAt: tuesdayEvening)]))
+let weighted = ClaudeForecast.rows(history: weightedHistory, now: saturday, chinese: false, activitySchedule: schedule)
+// Claude's window ends before any more active hours. Fable has used 75% in 24 active hours,
+// and can spend 8 more active hours before hitting its limit at 17:00 Monday.
+precondition(weighted.map(\.endText) == ["60% left at reset", "Out 1.0 days early"])
+precondition(weighted[0].projectedUsed == 40 && weighted[1].projectedUsed == 125)
+precondition(weighted.map(\.used) == [40, 75] && weighted.allSatisfy { $0.tooltip.contains("same local activity hours") })
+precondition(!weighted[0].runsOut && weighted[1].runsOut)
+let uniform = ClaudeForecast.rows(history: weightedHistory, now: saturday, chinese: false)
+precondition(weighted.map(\.pace) == uniform.map(\.pace), "the reference tick still measures elapsed wall time")
+precondition(weighted.map(\.projectedUsed) != uniform.map(\.projectedUsed))
+precondition(WeeklyActivitySchedule(weights: []) == nil)
 precondition(ClaudeForecast.rows(history: reloaded, now: now.addingTimeInterval(20 * 60), chinese: true)[0].endText.hasSuffix("· 旧"))
+let cachedRows = ClaudeForecast.rows(history: reloaded, now: now, chinese: false, reliable: false, windowKeys: ["seven_day"])
+precondition(cachedRows.count == 1 && cachedRows[0].endText == "Last left 87% · stale")
+precondition(cachedRows[0].projectedUsed == nil && cachedRows[0].pace == nil, "an old reading cannot drive a projection")
+let partial = ClaudeUsageHistory(url: nil)
+partial.record(snapshot(at: now.addingTimeInterval(-60), week: 12, fable: 80))
+partial.record(snapshot(at: now, week: 13, fable: nil))
+precondition(partial.lastWeeklySnapshot(at: now)?.modelWindows.isEmpty == true,
+             "the last total must not be paired with a model value from another check")
 
 // A new week replaces the old samples instead of mixing windows.
 let rollover = ClaudeUsageHistory(url: nil)
@@ -123,7 +158,7 @@ precondition(ProviderQuotaWindow(used: 3, resetsAt: nil).needsAttention(at: now)
 
 let codexRow = PaceRow(name: "Codex", color: .systemGray, used: 13, projectedUsed: 97, pace: 0.124,
                        endText: "重置时剩 3%", tone: .systemOrange, tooltip: "Codex")
-let zhRows = [codexRow] + ClaudeForecast.rows(history: reloaded, now: now, chinese: true)
+let zhRows = [codexRow] + ClaudeForecast.rows(history: weightedHistory, now: saturday, chinese: true, activitySchedule: schedule)
 let view = PaceBarsView(frame: NSRect(x: 0, y: 0, width: 460, height: PaceBarsView.height(rows: zhRows.count)))
 view.title = "周预测"
 view.legend = ("已用", "预计", "均匀配速")

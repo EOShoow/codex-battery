@@ -25,6 +25,25 @@ final class ClaudeUsageHistory {
         windows = file.windows
     }
 
+    /// The last successful weekly reading is for display only. Model readings must come from the same check.
+    func lastWeeklySnapshot(at now: Date) -> ProviderQuotaSnapshot? {
+        let nowAt = now.timeIntervalSince1970
+        func latest(_ window: Window) -> (time: Double, value: ProviderQuotaWindow)? {
+            guard window.resetsAt.isFinite, window.resetsAt > nowAt,
+                  let sample = window.samples.last, sample.count == 2,
+                  sample[0].isFinite, sample[0] <= nowAt,
+                  (0...1000).contains(sample[1]), window.resetsAt - sample[0] <= Self.weekSeconds + 600 else { return nil }
+            return (sample[0], ProviderQuotaWindow(used: sample[1], resetsAt: Date(timeIntervalSince1970: window.resetsAt)))
+        }
+        guard let week = windows["seven_day"].flatMap(latest) else { return nil }
+        var models: [String: ProviderQuotaWindow] = [:]
+        for (key, window) in windows where key.hasPrefix("seven_day_") {
+            if let model = latest(window), model.time == week.time { models[key] = model.value }
+        }
+        return ProviderQuotaSnapshot(checkedAt: Date(timeIntervalSince1970: week.time), fiveHour: nil,
+                                     week: week.value, modelWindows: models)
+    }
+
     /// Weekly windows only (`seven_day` and model-specific `seven_day_*`); 5-hour windows are not charted.
     func record(_ snapshot: ProviderQuotaSnapshot) {
         let now = snapshot.checkedAt.timeIntervalSince1970
@@ -70,12 +89,13 @@ enum ClaudeForecast {
         return [NSColor.systemTeal, .systemPink, .systemBrown, .systemIndigo][index % 4]
     }
 
-    /// Average-pace projection: used percent since the window start, extended to the reset.
-    /// The window start (reset − 7 days) is an exact 0% anchor, so a projection exists even with little history.
-    static func rows(history: ClaudeUsageHistory, now: Date, chinese: Bool) -> [PaceRow] {
+    /// Each window's average consumption is projected across the same local activity hours as Codex.
+    static func rows(history: ClaudeUsageHistory, now: Date, chinese: Bool,
+                     reliable: Bool = true, windowKeys: Set<String>? = nil,
+                     activitySchedule: WeeklyActivitySchedule? = nil) -> [PaceRow] {
         let nowAt = now.timeIntervalSince1970
         let week = ClaudeUsageHistory.weekSeconds
-        let keys = history.windows.keys.sorted { a, b in
+        let keys = history.windows.keys.filter { windowKeys?.contains($0) ?? true }.sorted { a, b in
             a == "seven_day" ? true : (b == "seven_day" ? false : a < b)
         }
         var modelIndex = 0
@@ -89,23 +109,41 @@ enum ClaudeForecast {
             let used = max(0, min(100, last[1]))
             let pace = max(0, min(1, (nowAt - start) / week))
             let name = displayName(key)
-            let stale = nowAt - last[0] > 15 * 60
-            let staleText = stale ? (chinese ? " · 旧" : " · stale") : ""
+            let stale = !reliable || nowAt - last[0] > 15 * 60
             let elapsedHours = (last[0] - start) / 3600
             let remainingHours = (window.resetsAt - last[0]) / 3600
             let usedText = chinese ? "本周已用 \(Int(used.rounded()))%" : "\(Int(used.rounded()))% used this week"
+            if stale {
+                let remaining = Int((100 - used).rounded(.down))
+                result.append(PaceRow(name: name, color: color, used: used, projectedUsed: nil, pace: nil,
+                                      endText: chinese ? "上次剩 \(remaining)% · 旧" : "Last left \(remaining)% · stale",
+                                      tone: .secondaryLabelColor,
+                                      tooltip: chinese ? "上次读数，\(usedText)。等待账户额度更新。"
+                                                       : "Last reading, \(usedText). Waiting for updated account quota."))
+                continue
+            }
             guard elapsedHours >= 6 else {
                 result.append(PaceRow(name: name, color: color, used: used, projectedUsed: nil, pace: pace,
-                                      endText: (chinese ? "积累中" : "building") + staleText, tone: .secondaryLabelColor,
+                                      endText: chinese ? "积累中" : "building", tone: .secondaryLabelColor,
                                       tooltip: chinese ? "\(name)：\(usedText)。开周不足 6 小时，暂不推算。"
                                                        : "\(name): \(usedText). Under 6 hours into the week; no projection yet."))
                 continue
             }
-            let rate = used / elapsedHours
-            let projected = used + rate * remainingHours
+            let elapsedWeight = activitySchedule.map { max($0.weight(from: start, to: last[0]), 1 / 60) } ?? elapsedHours
+            let remainingWeight = activitySchedule?.weight(from: last[0], to: window.resetsAt) ?? remainingHours
+            let rate = used / elapsedWeight
+            let projected = used + rate * remainingWeight
             let endText: String
             if projected >= 100, rate > 0 {
-                let early = (window.resetsAt - (last[0] + (100 - used) / rate * 3600)) / 3600
+                let weightToExhaust = (100 - used) / rate
+                let exhaustAt: Double
+                if let activitySchedule {
+                    exhaustAt = activitySchedule.timestamp(from: last[0], to: window.resetsAt,
+                                                            requiring: weightToExhaust) ?? window.resetsAt
+                } else {
+                    exhaustAt = last[0] + weightToExhaust * 3600
+                }
+                let early = max(0, (window.resetsAt - exhaustAt) / 3600)
                 let earlyText = early >= 24 ? String(format: chinese ? "%.1f 天" : "%.1f days", early / 24)
                                             : String(format: chinese ? "%.0f 小时" : "%.0f hours", early)
                 endText = chinese ? "提前 \(earlyText)用完" : "Out \(earlyText) early"
@@ -116,12 +154,20 @@ enum ClaudeForecast {
             let reset = DateFormatter()
             reset.dateFormat = "M/d HH:mm"
             let resetText = reset.string(from: Date(timeIntervalSince1970: window.resetsAt))
+            let method: String
+            if activitySchedule != nil {
+                method = chinese ? "与 Codex 共用本机作息，按此额度本周的活跃时段消耗速度推算。"
+                                 : "Uses the same local activity hours as Codex and this quota's pace during those hours."
+            } else {
+                method = chinese ? "作息样本不足，暂按本周平均速度推算。"
+                                 : "While activity history builds, this uses the average pace over elapsed hours."
+            }
             result.append(PaceRow(
-                name: name, color: color, used: used, projectedUsed: projected, pace: pace, endText: endText + staleText,
-                tone: stale ? .secondaryLabelColor : PaceRow.tone(remaining: 100 - projected, runsOut: projected >= 100),
+                name: name, color: color, used: used, projectedUsed: projected, pace: pace, endText: endText,
+                tone: PaceRow.tone(remaining: 100 - projected, runsOut: projected >= 100),
                 tooltip: chinese
-                    ? "\(name)：\(usedText)，\(endText)（\(resetText) 重置）。按本周平均速度推算，不考虑作息。竖线是均匀用到重置时此刻应在的位置。"
-                    : "\(name): \(usedText); \(endText) (resets \(resetText)). Average weekly pace, no activity-hour model. The tick marks where even pacing would be now."))
+                    ? "\(name) · \(usedText)，\(endText)（\(resetText) 重置）。\(method)竖线是均匀用到重置时此刻应在的位置。"
+                    : "\(name) · \(usedText), \(endText) (resets \(resetText)). \(method) The tick marks where even pacing would be now."))
         }
         return result
     }

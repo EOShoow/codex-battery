@@ -17,10 +17,12 @@ for required in (
 start = text.index("struct WeeklyTrendPoint: Decodable")
 end = text.index("private struct ResetCreditExpiryMarker", start)
 calculator = text[start:end]
+activity_schedule = (source.parent / "WeeklyActivitySchedule.swift").read_text(encoding="utf-8")
 
 swift_test = f"""
 import Foundation
 
+{activity_schedule}
 {calculator}
 
 func iso(_ timestamp: Double) -> String {{

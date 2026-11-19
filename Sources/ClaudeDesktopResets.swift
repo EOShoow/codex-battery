@@ -124,22 +124,111 @@ struct ClaudeDesktopResetSnapshot: Codable {
     let syncedAt: Date
 }
 
+/// Display-only values from the visible Usage page. The date is derived from its update label.
+struct ClaudeDesktopQuotaSnapshot: Codable, Equatable {
+    let fiveHourUsed: Double?
+    let weekUsed: Double
+    let fableUsed: Double?
+    let updatedAt: Date
+
+    var quota: ProviderQuotaSnapshot {
+        ProviderQuotaSnapshot(checkedAt: updatedAt,
+            fiveHour: fiveHourUsed.map { ProviderQuotaWindow(used: $0, resetsAt: nil) },
+            week: ProviderQuotaWindow(used: weekUsed, resetsAt: nil),
+            modelWindows: fableUsed.map { ["seven_day_fable": ProviderQuotaWindow(used: $0, resetsAt: nil)] } ?? [:])
+    }
+}
+
+struct ClaudeDesktopQuotaReading: Equatable {
+    enum Window {
+        case fiveHour, week, fable
+
+        static func isIndicator(role: String) -> Bool {
+            role == kAXLevelIndicatorRole || role == kAXProgressIndicatorRole
+        }
+
+        init?(role: String, labels: [String]) {
+            guard Self.isIndicator(role: role), let window = labels.lazy.compactMap(Self.init(label:)).first else { return nil }
+            self = window
+        }
+
+        init?(label: String) {
+            switch label.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() {
+            case "当前会话", "5 小时限额", "current session", "5-hour limit": self = .fiveHour
+            case "本周", "所有模型", "每周 · 所有模型", "this week", "all models", "weekly · all models": self = .week
+            case "fable", "每周 · fable", "weekly · fable": self = .fable
+            default: return nil
+            }
+        }
+    }
+
+    let fiveHourUsed: Double?
+    let weekUsed: Double
+    let fableUsed: Double?
+    let updateAge: TimeInterval
+    private static let relativeAge = try! NSRegularExpression(
+        pattern: #"^(\d{1,5}|a|an)\s*(秒|分钟|小时|天|seconds?|minutes?|hours?|days?)\s*(?:前|ago)$"#)
+
+    static func parse(progress: [(Window, Double?)], updateAge: TimeInterval) -> Self? {
+        var usage: [Window: Double] = [:]
+        for (window, percentage) in progress {
+            guard let percentage, (0...100).contains(percentage),
+                  usage[window].map({ $0 == percentage }) ?? true else { return nil }
+            usage[window] = percentage
+        }
+        guard let week = usage[.week] else { return nil }
+        return Self(fiveHourUsed: usage[.fiveHour], weekUsed: week, fableUsed: usage[.fable], updateAge: updateAge)
+    }
+
+    static func updateAge(in label: String) -> TimeInterval? {
+        let text = label.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
+        guard let heading = text.range(of: #"^(?:最后更新|上次更新|last updated)\s*[:：]?\s*"#, options: .regularExpression) else { return nil }
+        let age = String(text[heading.upperBound...])
+        if ["刚刚", "just now", "less than a minute ago"].contains(age) { return 0 }
+        let value = age as NSString
+        guard let match = relativeAge.firstMatch(in: age, range: NSRange(location: 0, length: value.length)) else { return nil }
+        let amount = value.substring(with: match.range(at: 1))
+        guard let count = amount == "a" || amount == "an" ? 1 : Double(amount) else { return nil }
+        switch value.substring(with: match.range(at: 2)) {
+        case "秒", "second", "seconds": return count
+        case "分钟", "minute", "minutes": return count * 60
+        case "小时", "hour", "hours": return count * 3600
+        case "天", "day", "days": return count * 86400
+        default: return nil
+        }
+    }
+
+    func snapshot(observedAt: Date) -> ClaudeDesktopQuotaSnapshot {
+        let time = observedAt.timeIntervalSince1970 - updateAge
+        let updatedAt = Date(timeIntervalSince1970: floor(time / 60) * 60)
+        return ClaudeDesktopQuotaSnapshot(fiveHourUsed: fiveHourUsed, weekUsed: weekUsed,
+                                         fableUsed: fableUsed, updatedAt: updatedAt)
+    }
+}
+
 /// An independent, read-only source. Poll only while the official desktop app is active.
 final class ClaudeDesktopResetMonitor {
     private static let bundleID = "com.anthropic.claudefordesktop"
     private static let logger = Logger(subsystem: "local.codex.battery.menu", category: "ClaudeDesktopResets")
     static var hasAccess: Bool { AXIsProcessTrusted() }
     private let didRead: (ClaudeDesktopResetReading?) -> Void
+    private let shouldReadQuota: () -> Bool
+    private let didReadQuota: (ClaudeDesktopQuotaSnapshot) -> Void
     private let worker = DispatchQueue(label: "local.codex.battery.claude-desktop-resets", qos: .utility)
     private var activationObserver: NSObjectProtocol?
     private var timer: Timer?
     private var reading = false
-    private var lastPage: ClaudeDesktopUsageReader.Page?
+    private var lastResetSection: ClaudeDesktopUsageReader.ResetSection?
+    private var lastQuotaReading: ClaudeDesktopQuotaReading?
     private var lastReadStage: String?
     private var pendingAbsence = false
 
-    init(didRead: @escaping (ClaudeDesktopResetReading?) -> Void) {
+    init(didRead: @escaping (ClaudeDesktopResetReading?) -> Void,
+         shouldReadQuota: @escaping () -> Bool,
+         didReadQuota: @escaping (ClaudeDesktopQuotaSnapshot) -> Void) {
         self.didRead = didRead
+        self.shouldReadQuota = shouldReadQuota
+        self.didReadQuota = didReadQuota
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.checkForeground() }
@@ -156,7 +245,7 @@ final class ClaudeDesktopResetMonitor {
               app.bundleIdentifier == Self.bundleID, Self.hasAccess else {
             timer?.invalidate()
             timer = nil
-            lastPage = nil
+            lastResetSection = nil
             pendingAbsence = false
             return
         }
@@ -186,9 +275,11 @@ final class ClaudeDesktopResetMonitor {
 
     private func poll(pid: pid_t, requireForeground: Bool) {
         guard !reading else { return }
+        let includeQuota = shouldReadQuota()
+        if !includeQuota { lastQuotaReading = nil }
         reading = true
         worker.async { [weak self] in
-            let reader = ClaudeDesktopUsageReader()
+            let reader = ClaudeDesktopUsageReader(includeQuota: includeQuota)
             let page = reader.read(pid: pid)
             let stage = reader.stage
             DispatchQueue.main.async { [weak self] in
@@ -200,21 +291,28 @@ final class ClaudeDesktopResetMonitor {
                     Self.logger.info("Desktop sync: \(stage, privacy: .public)")
                     self.lastReadStage = stage
                 }
-                self.publish(page)
+                self.publish(page, usagePageMissing: stage == "usage_page_not_found")
             }
         }
     }
 
-    private func publish(_ page: ClaudeDesktopUsageReader.Page?) {
+    private func publish(_ page: ClaudeDesktopUsageReader.Page?, usagePageMissing: Bool) {
+        if usagePageMissing { lastQuotaReading = nil }
+        // Keep the timestamp for the same relative label while the page stays open.
+        if let quota = page?.quota, quota != lastQuotaReading, shouldReadQuota() {
+            lastQuotaReading = quota
+            didReadQuota(quota.snapshot(observedAt: Date()))
+        }
+        let section = page?.resets
         // A loaded page without a reset section can arrive before the grants. Confirm on the next read.
-        if page == .absent, !pendingAbsence {
+        if section == .absent, !pendingAbsence {
             pendingAbsence = true
             return
         }
-        pendingAbsence = page == .absent
-        guard page != lastPage else { return }
-        lastPage = page
-        switch page {
+        pendingAbsence = section == .absent
+        guard section != lastResetSection else { return }
+        lastResetSection = section
+        switch section {
         case .resets(let value): didRead(value)
         case .absent: didRead(nil)
         case nil: break
@@ -223,7 +321,11 @@ final class ClaudeDesktopResetMonitor {
 }
 
 private final class ClaudeDesktopUsageReader {
-    enum Page: Equatable { case resets(ClaudeDesktopResetReading), absent }
+    enum ResetSection: Equatable { case resets(ClaudeDesktopResetReading), absent }
+    struct Page {
+        let resets: ResetSection?
+        let quota: ClaudeDesktopQuotaReading?
+    }
 
     private struct Node {
         let role: String
@@ -246,7 +348,10 @@ private final class ClaudeDesktopUsageReader {
     private static let containers: Set = [kAXWindowRole, kAXGroupRole, kAXScrollAreaRole, kAXSplitGroupRole,
                                           kAXTabGroupRole, "AXDialog", "AXWebArea"]
     private let deadline = ProcessInfo.processInfo.systemUptime + 3
+    private let includeQuota: Bool
     private(set) var stage = "window_unavailable"
+
+    init(includeQuota: Bool) { self.includeQuota = includeQuota }
 
     func read(pid: pid_t) -> Page? {
         let app = AXUIElementCreateApplication(pid)
@@ -323,13 +428,14 @@ private final class ClaudeDesktopUsageReader {
             if lines.contains(where: ClaudeDesktopResetReading.nextSectionNames.contains) { break }
         }
         guard withinDeadline else { return nil }
+        let quota = includeQuota ? readQuota(children) : nil
         if let reading = ClaudeDesktopResetReading.parseUsageLabels(labels, at: Date()) {
             stage = "read_resets"
-            return .resets(reading)
+            return Page(resets: .resets(reading), quota: quota)
         }
         if labels.contains(where: ClaudeDesktopResetReading.sectionNames.contains) {
             stage = "reset_count_unreadable"
-            return nil
+            return quota.map { Page(resets: nil, quota: $0) }
         }
         let loaded = labels.contains(where: ClaudeDesktopResetReading.nextSectionNames.contains)
             && children.contains { element, node in
@@ -338,7 +444,38 @@ private final class ClaudeDesktopUsageReader {
                 return value is NSNumber || (value as? String)?.isEmpty == false
             }
         if loaded { stage = "no_reset_section" }
-        return loaded ? .absent : nil
+        return loaded || quota != nil ? Page(resets: loaded ? .absent : nil, quota: quota) : nil
+    }
+
+    private func readQuota(_ children: [(AXUIElement, Node)]) -> ClaudeDesktopQuotaReading? {
+        let boundary = ClaudeDesktopResetReading.sectionNames.union(ClaudeDesktopResetReading.nextSectionNames)
+        let progress = children.prefix { !isHeading($0.1, named: boundary) }.flatMap {
+            quotaProgress(of: $0.0, node: $0.1, depth: 4)
+        }
+        for (element, node) in children.reversed() {
+            guard withinDeadline else { break }
+            if let age = text(of: element, node: node, depth: 4).lazy.compactMap(ClaudeDesktopQuotaReading.updateAge).first {
+                return ClaudeDesktopQuotaReading.parse(progress: progress, updateAge: age)
+            }
+        }
+        return nil
+    }
+
+    private func quotaProgress(of element: AXUIElement, node: Node, depth: Int) -> [(ClaudeDesktopQuotaReading.Window, Double?)] {
+        guard withinDeadline else { return [] }
+        if ClaudeDesktopQuotaReading.Window.isIndicator(role: node.role) {
+            var window = ClaudeDesktopQuotaReading.Window(role: node.role, labels: node.names)
+            if window == nil, let title = self.element(attribute(kAXTitleUIElementAttribute, of: element)) {
+                let titleNode = Node(title)
+                window = ClaudeDesktopQuotaReading.Window(role: node.role,
+                    labels: titleNode.names + text(of: title, node: titleNode, depth: 2))
+            }
+            guard let window else { return [] }
+            let value = attribute(kAXValueAttribute, of: element) as? NSNumber
+            return [(window, value?.doubleValue)]
+        }
+        guard depth > 0, Self.containers.contains(node.role) else { return [] }
+        return node.children.prefix(20).flatMap { quotaProgress(of: $0, node: Node($0), depth: depth - 1) }
     }
 
     private func isHeading(_ node: Node, named names: Set<String>) -> Bool {

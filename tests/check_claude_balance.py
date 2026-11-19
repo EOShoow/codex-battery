@@ -415,6 +415,32 @@ let writtenText = String(data: try Data(contentsOf: diagnostics), encoding: .utf
 precondition(!writtenText.contains("g1"), "grant ids stay out of diagnostics")
 FakeUsageProtocol.responseBody = body
 
+// Startup and locally expired credentials show weekly history without treating it as a live account read.
+let expiredSuite = suite + ".expired-history"
+let expiredDefaults = UserDefaults(suiteName: expiredSuite)!
+defer { expiredDefaults.removePersistentDomain(forName: expiredSuite) }
+let expiredHistoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(expiredSuite + ".json")
+defer { try? FileManager.default.removeItem(at: expiredHistoryURL) }
+ClaudeUsageHistory(url: expiredHistoryURL).record(withLimits)
+expiredDefaults.set(true, forKey: QuotaBalanceMenuController.enabledKey)
+expiredDefaults.set("ok", forKey: "claudeQuotaLastOutcome")
+let expiredController = QuotaBalanceMenuController(defaults: expiredDefaults, chinese: false,
+    client: ClaudeQuotaClient(configuration: config), historyURL: expiredHistoryURL,
+    credentialLoader: { throw ClaudeQuotaError.loginExpired })
+let warmStart = expiredController.displayedClaude(at: now)
+precondition(warmStart.snapshot?.week?.remaining == 84 && warmStart.snapshot?.modelWindows["seven_day_fable"]?.remaining == 70)
+precondition(warmStart.snapshot?.fiveHour == nil && !warmStart.reliable && expiredController.currentQuotas.claude == nil)
+let requestsBeforeExpiry = FakeUsageProtocol.count
+expiredController.refreshIfDue()
+pump { expiredDefaults.string(forKey: "claudeQuotaLastOutcome") == "credential_expired" }
+precondition(texts(expiredController.item.view).contains("84% · stale · Fable 70%"))
+precondition(expiredController.currentQuotas.claude == nil && !expiredController.currentQuotas.claudeReliable)
+precondition(FakeUsageProtocol.count == requestsBeforeExpiry)
+precondition(expiredController.displayedClaude(at: weekReset).snapshot == nil, "history ends with its weekly window")
+expiredDefaults.set("http_401", forKey: "claudeQuotaLastOutcome")
+let signedOut = QuotaBalanceMenuController(defaults: expiredDefaults, chinese: false, historyURL: expiredHistoryURL)
+precondition(signedOut.displayedClaude(at: now).snapshot == nil, "an account rejection cannot revive cached account values")
+
 // The official Desktop page shows one total and grouped grant rows in the accessibility tree.
 precondition(ClaudeDesktopUsageRoute.matches(URL(string: "https://claude.ai/settings/usage")!))
 precondition(ClaudeDesktopUsageRoute.matches(URL(string: "https://claude.ai/epitaxy/local-test#settings/usage")!))
@@ -451,6 +477,34 @@ let partialDesktop = ClaudeDesktopResetReading.parse(totalLabels: ["2 available"
 ], at: viewedAt)
 precondition(partialDesktop?.count == 2 && partialDesktop?.grants.isEmpty == true)
 
+// The Usage page exposes named progress indicators followed by the age of the page data.
+let pageAge = ClaudeDesktopQuotaReading.updateAge(in: "最后更新：28 分钟前")!
+precondition(pageAge == 28 * 60)
+precondition(ClaudeDesktopQuotaReading.updateAge(in: "上次更新：刚刚") == 0)
+precondition(ClaudeDesktopQuotaReading.updateAge(in: "上次更新：2 分钟前") == 120)
+precondition(ClaudeDesktopQuotaReading.updateAge(in: "Last updated: an hour ago") == 3600)
+precondition(ClaudeDesktopQuotaReading.updateAge(in: "Last updated: just now") == 0)
+precondition(ClaudeDesktopQuotaReading.updateAge(in: "Last updated: unavailable") == nil)
+let quotaProgress: [(ClaudeDesktopQuotaReading.Window, Double?)] = [
+    (.init(role: "AXLevelIndicator", labels: ["当前会话"])!, 20),
+    (.init(role: "AXLevelIndicator", labels: ["本周"])!, 19),
+    (.init(role: "AXLevelIndicator", labels: ["Fable"])!, 36)
+]
+precondition(ClaudeDesktopQuotaReading.Window(role: "AXProgressIndicator", labels: ["All models"]) == .week)
+precondition(ClaudeDesktopQuotaReading.Window(role: "AXButton", labels: ["本周"]) == nil)
+let pageQuota = ClaudeDesktopQuotaReading.parse(progress: quotaProgress, updateAge: pageAge)!.snapshot(observedAt: now)
+precondition(pageQuota.quota.fiveHour?.remaining == 80 && pageQuota.quota.week?.remaining == 81)
+precondition(pageQuota.quota.modelWindows["seven_day_fable"]?.remaining == 64)
+let expectedTime = floor((now.timeIntervalSince1970 - pageAge) / 60) * 60
+precondition(pageQuota.updatedAt.timeIntervalSince1970 == expectedTime, "use the page's data time, not the sync time")
+precondition(ClaudeDesktopQuotaReading.Window(label: "Claude Code") == nil, "product breakdown is not quota")
+precondition(ClaudeDesktopQuotaReading.parse(progress: [(.fiveHour, 20)], updateAge: pageAge) == nil)
+precondition(ClaudeDesktopQuotaReading.parse(progress: [(.week, 101)], updateAge: pageAge) == nil)
+precondition(ClaudeDesktopQuotaReading.parse(progress: quotaProgress + [(.fable, 37)], updateAge: pageAge) == nil)
+precondition(ClaudeDesktopQuotaReading.parse(progress: quotaProgress + [(.fable, nil)], updateAge: pageAge) == nil)
+let partialPage = ClaudeDesktopQuotaReading.parse(progress: [(.week, 0)], updateAge: 0)!
+precondition(partialPage.fiveHourUsed == nil && partialPage.fableUsed == nil && partialPage.weekUsed == 0)
+
 let desktopSuite = suite + ".desktop"
 let desktopDefaults = UserDefaults(suiteName: desktopSuite)!
 defer { desktopDefaults.removePersistentDomain(forName: desktopSuite) }
@@ -463,9 +517,13 @@ let liveFixture = ClaudeDesktopResetReading(count: desktop.count, grants: deskto
 })
 let beforeDesktop = FakeUsageProtocol.count
 desktopController.updateDesktopResets(liveFixture)
+desktopController.updateDesktopQuota(pageQuota)
 precondition(!desktopController.active && desktopController.desktopResets == nil, "off must ignore desktop readings")
 desktopController.setDesktopSyncEnabled(true)
 desktopController.updateDesktopResets(liveFixture)
+desktopController.updateDesktopQuota(pageQuota)
+precondition(!desktopController.desktopQuotaFallbackActive && desktopController.displayedClaude(at: now).snapshot == nil)
+precondition(desktopDefaults.object(forKey: "claudeDesktopQuota") == nil, "reset-only users do not store account quota")
 precondition(!desktopController.enabled && desktopController.currentQuotas.claude == nil)
 precondition(desktopController.claudeResetStock(at: now)?.count == 3, "feeds the menu bar without a quota snapshot")
 precondition(texts(desktopController.item.view).contains { $0.hasPrefix("3 次 · 最近") })
@@ -488,6 +546,61 @@ restartedDesktop.updateDesktopResets(nil)
 let clearedDesktop = QuotaBalanceMenuController(defaults: desktopDefaults, chinese: true, desktopAccess: { true })
 precondition(clearedDesktop.desktopResets == nil, "a loaded usage page without a reset section clears the cached reading")
 
+let fallbackSuite = suite + ".desktop-quota"
+let fallbackDefaults = UserDefaults(suiteName: fallbackSuite)!
+defer { fallbackDefaults.removePersistentDomain(forName: fallbackSuite) }
+fallbackDefaults.set(true, forKey: QuotaBalanceMenuController.enabledKey)
+var cliLoginReady = false
+let fallback = QuotaBalanceMenuController(defaults: fallbackDefaults, chinese: false,
+    client: ClaudeQuotaClient(configuration: config), desktopAccess: { true }, credentialLoader: {
+        if !cliLoginReady { throw ClaudeQuotaError.loginExpired }
+        return ClaudeQuotaCredential(accessToken: "offline-test")
+    })
+fallback.setDesktopSyncEnabled(true)
+fallback.updateDesktopQuota(pageQuota)
+precondition(!fallback.desktopQuotaFallbackActive && fallbackDefaults.object(forKey: "claudeDesktopQuota") == nil)
+let beforeFallback = FakeUsageProtocol.count
+fallback.refreshIfDue()
+pump { fallback.desktopQuotaFallbackActive }
+precondition(texts(fallback.item.view).contains("Claude Code login expired · open Usage in Claude Desktop"))
+fallback.updateDesktopQuota(pageQuota)
+fallback.updateDesktopResets(liveFixture)
+let pageFields = texts(fallback.item.view)
+precondition(pageFields.contains("80% · stale") && pageFields.contains("81% · stale · Fable 64%"))
+precondition(pageFields.contains { $0.hasPrefix("≈ ") })
+precondition(fallback.claudeResetStock(at: now)?.count == 3)
+precondition(fallback.currentQuotas.claude == nil && !fallback.currentQuotas.claudeReliable)
+fallback.menuWillOpen()
+precondition(fallback.displayedClaude(at: now).snapshot?.checkedAt == pageQuota.updatedAt, "closing the page preserves its date")
+let reopenedFallback = QuotaBalanceMenuController(defaults: fallbackDefaults, chinese: false)
+precondition(reopenedFallback.displayedClaude(at: now).fromDesktop)
+precondition(reopenedFallback.displayedClaude(at: now).snapshot?.checkedAt == pageQuota.updatedAt)
+fallback.setDesktopSyncEnabled(false)
+fallback.updateDesktopQuota(pageQuota)
+precondition(!fallback.desktopQuotaFallbackActive && fallback.displayedClaude(at: now).snapshot == nil)
+fallback.setDesktopSyncEnabled(true)
+precondition(fallback.displayedClaude(at: now).fromDesktop)
+precondition(FakeUsageProtocol.count == beforeFallback, "the Desktop fallback adds no network requests")
+
+// A fresh page can show 100% Fable remaining without borrowing a reset time or authorizing routing.
+let freshPage = ClaudeDesktopQuotaReading.parse(progress: [(.week, 19), (.fable, 0)], updateAge: 0)!.snapshot(observedAt: now)
+fallback.updateDesktopQuota(freshPage)
+precondition(fallback.displayedClaude(at: now).reliable)
+precondition(texts(fallback.item.view).contains("81% · Fable 100%"))
+precondition(fallback.currentQuotas.claude == nil)
+
+fallbackDefaults.set("http_401", forKey: "claudeQuotaLastOutcome")
+precondition(fallback.displayedClaude(at: now).snapshot == nil, "an ambiguous authorization failure cannot display the Desktop cache")
+fallbackDefaults.set("credential_expired", forKey: "claudeQuotaLastOutcome")
+cliLoginReady = true
+fallbackDefaults.removeObject(forKey: "claudeQuotaNextCheck")
+FakeUsageProtocol.status = 200
+FakeUsageProtocol.responseBody = body
+fallback.refreshIfDue()
+pump { fallbackDefaults.string(forKey: "claudeQuotaLastOutcome") == "ok" }
+precondition(FakeUsageProtocol.count == beforeFallback + 1 && fallback.currentQuotas.claude != nil)
+precondition(!fallback.displayedClaude(at: Date()).fromDesktop && fallbackDefaults.object(forKey: "claudeDesktopQuota") == nil)
+
 if CommandLine.arguments.count > 1 {
     let canvas = NSView(frame: NSRect(x: 0, y: 0, width: 920, height: QuotaBalanceView.height * 2))
     canvas.wantsLayer = true
@@ -495,12 +608,13 @@ if CommandLine.arguments.count > 1 {
     let cases: [(ProviderQuotaSnapshot?, ProviderQuotaSnapshot?, Bool, Bool, String)] = [
         (codexWithResets, withResets, true, true, "均衡提示仅供参考 · 两家的百分比独立计算"),
         (quota(20, 5), quota(80, 5), true, false, "Pacing hint only · each provider has its own quota"),
-        (quota(20, 5, age: 2000), nil, false, true, "Claude · Claude Code 登录已过期 · 请在终端更新登录"),
+        (quota(20, 5), pageQuota.quota, false, true, "Claude Desktop 用量页 · 终端登录已过期"),
         (quota(20, 5), nil, false, false, "Claude is off · enable account quota checks below")]
     for (index, sample) in cases.enumerated() {
         let view = QuotaBalanceView(codex: sample.0, claude: sample.1, codexReliable: sample.2,
             claudeReliable: sample.2, claudeStatus: sample.4, now: now, chinese: sample.3,
-            desktopResets: index == 0 ? ClaudeDesktopResetSnapshot(reading: liveFixture, syncedAt: now) : nil)
+            desktopResets: index == 0 || index == 2 ? ClaudeDesktopResetSnapshot(reading: liveFixture, syncedAt: now) : nil,
+            claudeFromDesktop: index == 2)
         view.frame.origin = NSPoint(x: CGFloat(index % 2) * 460, y: CGFloat(1 - index / 2) * QuotaBalanceView.height)
         canvas.addSubview(view)
         for field in view.subviews {
@@ -521,7 +635,8 @@ with tempfile.TemporaryDirectory() as folder:
     binary = folder / "check-claude-balance"
     subprocess.run([
         "swiftc", str(main), str(root / "Sources/ClaudeQuota.swift"), str(root / "Sources/ClaudeDesktopResets.swift"),
-        str(root / "Sources/QuotaBalanceMenu.swift"), str(root / "Sources/ClaudeForecast.swift"), str(root / "Sources/PaceBars.swift"), "-framework", "AppKit", "-o", str(binary)
+        str(root / "Sources/QuotaBalanceMenu.swift"), str(root / "Sources/ClaudeForecast.swift"),
+        str(root / "Sources/WeeklyActivitySchedule.swift"), str(root / "Sources/PaceBars.swift"), "-framework", "AppKit", "-o", str(binary)
     ], check=True)
     command = [str(binary)]
     if preview := os.environ.get("CODEX_BATTERY_BALANCE_PREVIEW"):

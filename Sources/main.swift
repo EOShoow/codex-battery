@@ -14,6 +14,7 @@ final class QuotaIconView: NSView {
     var resetCreditsExpiringSoon = false
     /// Claude Code side of the split-digits style; nil means no reading, drawn as a dotted half.
     var claudeWeek: Int?
+    var claudeWeekStale = false
     var claudeResetCredits: Int?
     var claudeResetsExpiringSoon = false
     var serviceTier = "standard"
@@ -50,7 +51,7 @@ final class QuotaIconView: NSView {
     private func drawDualResetsIcon() {
         let ring = NSRect(x: bounds.midX - 9.5, y: bounds.midY - 8.5, width: 19, height: 17)
         drawHalfRing(in: ring, right: false, remaining: week ?? fiveHour)
-        drawHalfRing(in: ring, right: true, remaining: claudeWeek)
+        drawHalfRing(in: ring, right: true, remaining: claudeWeek, stale: claudeWeekStale)
         NSColor.labelColor.withAlphaComponent(0.3).setFill()
         NSBezierPath(roundedRect: NSRect(x: bounds.midX - 0.4, y: bounds.midY - 4.8, width: 0.8, height: 9.6),
                      xRadius: 0.4, yRadius: 0.4).fill()
@@ -59,7 +60,7 @@ final class QuotaIconView: NSView {
     }
 
     /// Fills from the bottom centre up the outer edge, so the two halves compare by height.
-    private func drawHalfRing(in rect: NSRect, right: Bool, remaining: Int?) {
+    private func drawHalfRing(in rect: NSRect, right: Bool, remaining: Int?, stale: Bool = false) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let radius: CGFloat = 5.0
         let gap: CGFloat = 1.7
@@ -92,7 +93,7 @@ final class QuotaIconView: NSView {
         let clamped = max(0, min(100, remaining ?? 0))
         if clamped > 0 {
             context.addPath(path)
-            context.setStrokeColor(NSColor.labelColor.withAlphaComponent(0.86).cgColor)
+            context.setStrokeColor(NSColor.labelColor.withAlphaComponent(stale ? 0.52 : 0.86).cgColor)
             context.setLineDash(phase: 0, lengths: clamped < 100 ? [length * CGFloat(clamped) / 100, length * 2] : [])
             context.strokePath()
         }
@@ -433,14 +434,7 @@ private enum WeeklyTrendCalculator {
         }
 
         let offsetSeconds = habitTimeZoneOffsetSeconds ?? 0
-        let usableHabitWeights: [Double]?
-        if let habitWeights,
-           habitWeights.count == 168,
-           habitWeights.contains(where: { $0.isFinite && $0 > 0 }) {
-            usableHabitWeights = habitWeights.map { $0.isFinite ? max(0, $0) : 0 }
-        } else {
-            usableHabitWeights = nil
-        }
+        let activitySchedule = WeeklyActivitySchedule(weights: habitWeights, timeZoneOffsetSeconds: offsetSeconds)
 
         let usableHistoricalRate = historicalRatePctPerHabitHour.flatMap {
             $0.isFinite && $0 > 0 && paceCycles >= 2 ? $0 : nil
@@ -458,16 +452,8 @@ private enum WeeklyTrendCalculator {
         let projectedHighUsed: Double
         let exhaustAt: Double?
         let model: String
-        if let weights = usableHabitWeights {
-            let elapsedWeight = max(
-                habitWeight(
-                    from: startAt,
-                    to: nowAt,
-                    weights: weights,
-                    timeZoneOffsetSeconds: offsetSeconds
-                ),
-                1 / 60
-            )
+        if let activitySchedule {
+            let elapsedWeight = max(activitySchedule.weight(from: startAt, to: nowAt), 1 / 60)
             let baseHabitRate = clampedUsed / elapsedWeight
             var habitRate = usableHistoricalRate ?? baseHabitRate
             var lowHabitRate = min(
@@ -480,12 +466,7 @@ private enum WeeklyTrendCalculator {
             )
             if let anchor {
                 let coverageHours = (nowAt - anchor.timestamp) / 3600
-                let recentHabitWeight = habitWeight(
-                    from: anchor.timestamp,
-                    to: nowAt,
-                    weights: weights,
-                    timeZoneOffsetSeconds: offsetSeconds
-                )
+                let recentHabitWeight = activitySchedule.weight(from: anchor.timestamp, to: nowAt)
                 if coverageHours >= 12, recentHabitWeight >= 1 {
                     var recentRate = max(0, (clampedUsed - anchor.used) / recentHabitWeight)
                     let referenceRate = usableHistoricalRate ?? baseHabitRate
@@ -503,24 +484,17 @@ private enum WeeklyTrendCalculator {
                     highHabitRate = highHabitRate * (1 - recentWeight) + recentRate * recentWeight
                 }
             }
-            let futureWeight = habitWeight(
-                from: nowAt,
-                to: resetAt,
-                weights: weights,
-                timeZoneOffsetSeconds: offsetSeconds
-            )
+            let futureWeight = activitySchedule.weight(from: nowAt, to: resetAt)
             projectedUsed = clampedUsed + habitRate * futureWeight
             projectedLowUsed = clampedUsed + min(lowHabitRate, highHabitRate) * futureWeight
             projectedHighUsed = clampedUsed + max(lowHabitRate, highHabitRate) * futureWeight
             let remainingHours = max(0, (resetAt - nowAt) / 3600)
             rate = remainingHours > 0 ? max(0, projectedUsed - clampedUsed) / remainingHours : 0
             if projectedUsed >= 100, habitRate > 0 {
-                exhaustAt = habitExhaustTimestamp(
+                exhaustAt = activitySchedule.timestamp(
                     from: nowAt,
                     to: resetAt,
-                    requiredWeight: max(0, (100 - clampedUsed) / habitRate),
-                    weights: weights,
-                    timeZoneOffsetSeconds: offsetSeconds
+                    requiring: max(0, (100 - clampedUsed) / habitRate)
                 )
             } else {
                 exhaustAt = nil
@@ -600,60 +574,6 @@ private enum WeeklyTrendCalculator {
             cycleAveragePctPerDay: nil,
             model: "elapsed"
         )
-    }
-
-    private static func habitHourIndex(_ timestamp: Double, timeZoneOffsetSeconds: Int) -> Int {
-        let localHours = Int(floor((timestamp + Double(timeZoneOffsetSeconds)) / 3600))
-        let localDays = Int(floor(Double(localHours) / 24))
-        let hour = ((localHours % 24) + 24) % 24
-        let weekday = ((localDays + 3) % 7 + 7) % 7
-        return weekday * 24 + hour
-    }
-
-    private static func habitWeight(
-        from start: Double,
-        to end: Double,
-        weights: [Double],
-        timeZoneOffsetSeconds: Int
-    ) -> Double {
-        guard end > start, weights.count == 168 else { return 0 }
-        var cursor = start
-        var total = 0.0
-        while cursor < end {
-            let localHour = floor((cursor + Double(timeZoneOffsetSeconds)) / 3600)
-            let nextBoundary = (localHour + 1) * 3600 - Double(timeZoneOffsetSeconds)
-            let segmentEnd = min(end, max(cursor + 1, nextBoundary))
-            let durationHours = (segmentEnd - cursor) / 3600
-            total += durationHours * weights[habitHourIndex(cursor, timeZoneOffsetSeconds: timeZoneOffsetSeconds)]
-            cursor = segmentEnd
-        }
-        return total
-    }
-
-    private static func habitExhaustTimestamp(
-        from start: Double,
-        to end: Double,
-        requiredWeight: Double,
-        weights: [Double],
-        timeZoneOffsetSeconds: Int
-    ) -> Double? {
-        guard requiredWeight > 0, end > start, weights.count == 168 else { return start }
-        var remaining = requiredWeight
-        var cursor = start
-        while cursor < end {
-            let localHour = floor((cursor + Double(timeZoneOffsetSeconds)) / 3600)
-            let nextBoundary = (localHour + 1) * 3600 - Double(timeZoneOffsetSeconds)
-            let segmentEnd = min(end, max(cursor + 1, nextBoundary))
-            let weight = weights[habitHourIndex(cursor, timeZoneOffsetSeconds: timeZoneOffsetSeconds)]
-            let segmentHours = (segmentEnd - cursor) / 3600
-            let available = segmentHours * weight
-            if weight > 0, remaining <= available {
-                return cursor + remaining / weight * 3600
-            }
-            remaining -= available
-            cursor = segmentEnd
-        }
-        return nil
     }
 
     private static func parseTimestamp(_ timestamp: String?) -> Date? {
@@ -1138,9 +1058,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func applyClaudeSettings() {
         if quotaBalanceMenu.desktopSyncEnabled {
             if claudeDesktopResetMonitor == nil {
-                claudeDesktopResetMonitor = ClaudeDesktopResetMonitor { [weak self] reading in
-                    self?.quotaBalanceMenu.updateDesktopResets(reading)
-                }
+                claudeDesktopResetMonitor = ClaudeDesktopResetMonitor(
+                    didRead: { [weak self] in self?.quotaBalanceMenu.updateDesktopResets($0) },
+                    shouldReadQuota: { [weak self] in self?.quotaBalanceMenu.desktopQuotaFallbackActive ?? false },
+                    didReadQuota: { [weak self] in self?.quotaBalanceMenu.updateDesktopQuota($0) }
+                )
             }
         } else {
             claudeDesktopResetMonitor = nil
@@ -1353,6 +1275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func applyClaudeToIcon() {
         guard quotaBalanceMenu.active else {
             iconView.claudeWeek = nil
+            iconView.claudeWeekStale = false
             iconView.claudeResetCredits = nil
             iconView.claudeResetsExpiringSoon = false
             iconView.tooltipText = codexTooltip
@@ -1360,15 +1283,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         let now = Date()
-        let quotas = quotaBalanceMenu.currentQuotas
-        let claude = quotas.claude
+        let shown = quotaBalanceMenu.displayedClaude(at: now)
+        let claude = shown.snapshot
         let resetStock = quotaBalanceMenu.claudeResetStock(at: now)
         let desktopResets = quotaBalanceMenu.desktopResets
         func remaining(_ window: ProviderQuotaWindow?) -> Int? {
-            guard let window else { return nil }
-            return window.resetsAt.map { $0 <= now } == true ? 100 : window.remaining
+            guard let window, window.resetsAt.map({ $0 > now }) ?? true else { return nil }
+            return window.remaining
         }
-        iconView.claudeWeek = remaining(claude?.week) ?? remaining(claude?.fiveHour)
+        iconView.claudeWeek = remaining(claude?.week)
+        iconView.claudeWeekStale = !shown.reliable
         iconView.claudeResetCredits = resetStock?.count
         iconView.claudeResetsExpiringSoon = resetStock?.expiringSoon(at: now) ?? false
         var lines = [codexTooltip]
@@ -1377,11 +1301,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let five = remaining(claude.fiveHour) { parts.append(t("5小时剩余 \(five)%", "5h left \(five)%")) }
             if let week = remaining(claude.week) { parts.append(t("1周剩余 \(week)%", "1w left \(week)%")) }
             for (key, window) in claude.modelWindows.sorted(by: { $0.key < $1.key })
-            where !window.notStarted && window.isCurrent(at: now) {
+            where shown.fromDesktop || (!window.notStarted && window.isCurrent(at: now)) {
                 parts.append("\(ClaudeForecast.displayName(key)) \(window.remaining)%")
             }
             if desktopResets == nil, let resetStock { parts.append(t("可用重置 \(resetStock.count)", "resets \(resetStock.count)")) }
-            lines.append("Claude Code: " + parts.joined(separator: " · ") + (quotas.claudeReliable ? "" : t("  旧数据", "  cached")))
+            if !parts.isEmpty {
+                let source = shown.fromDesktop ? "Claude Desktop" : "Claude Code"
+                lines.append(source + ": " + parts.joined(separator: " · ") + (shown.reliable ? "" : t("  旧数据", "  cached")))
+            }
         }
         if let desktopResets, let resetStock {
             lines.append(QuotaBalanceView.desktopSyncLabel(desktopResets.syncedAt, chinese: useChinese) + " · "
@@ -1794,8 +1721,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             return
         }
-        let claudeRows = quotaBalanceMenu.enabled
-            ? ClaudeForecast.rows(history: quotaBalanceMenu.history, now: Date(), chinese: useChinese) : []
+        let now = Date()
+        let shown = quotaBalanceMenu.displayedClaude(at: now)
+        let claudeRows: [PaceRow]
+        if let snapshot = shown.snapshot, !shown.fromDesktop {
+            var keys = Set(snapshot.modelWindows.keys)
+            if snapshot.week != nil { keys.insert("seven_day") }
+            let activitySchedule = lastGoodInfo.flatMap {
+                WeeklyActivitySchedule(weights: $0.weeklyHabitWeights,
+                                       timeZoneOffsetSeconds: $0.weeklyHabitTimeZoneOffsetSeconds)
+            }
+            claudeRows = ClaudeForecast.rows(history: quotaBalanceMenu.history, now: now, chinese: useChinese,
+                                             reliable: shown.reliable, windowKeys: keys, activitySchedule: activitySchedule)
+        } else {
+            claudeRows = []
+        }
         let codex = lastCodexForecast ?? WeeklyForecastPresentation(
             summary: "-", confidence: "", actualPoints: [], currentPoint: nil, forecastPoint: nil,
             resetCreditMarker: nil, tone: .secondaryLabelColor, tooltip: t("Codex 周额度暂不可用", "Codex weekly quota unavailable"))

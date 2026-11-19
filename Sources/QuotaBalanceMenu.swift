@@ -8,7 +8,7 @@ final class QuotaBalanceView: NSView {
 
     init(codex: ProviderQuotaSnapshot?, claude: ProviderQuotaSnapshot?, codexReliable: Bool,
          claudeReliable: Bool, claudeStatus: String, now: Date, chinese: Bool,
-         desktopResets: ClaudeDesktopResetSnapshot? = nil) {
+         desktopResets: ClaudeDesktopResetSnapshot? = nil, claudeFromDesktop: Bool = false) {
         super.init(frame: NSRect(x: 0, y: 0, width: 460, height: Self.height))
         func text(_ value: String, x: CGFloat, y: CGFloat, width: CGFloat, bold: Bool = false,
                   secondary: Bool = false, tooltip: String? = nil) {
@@ -47,23 +47,29 @@ final class QuotaBalanceView: NSView {
             let day = date(nearest, format: "M/d")
             return count + (chinese ? " · 最近 \(day) 到期" : " · next expires \(day)")
         }
-        for (snapshot, reliable, x, desktop) in [(codex, codexReliable, CGFloat(112), nil),
-                                                (claude, claudeReliable, CGFloat(282), desktopResets)] {
+        for (snapshot, reliable, x, desktop, fromDesktop) in [(codex, codexReliable, CGFloat(112), nil, false),
+                                                            (claude, claudeReliable, CGFloat(282), desktopResets, claudeFromDesktop)] {
             let stale = snapshot.map { !reliable || !$0.isFresh(at: now) } ?? false
             let suffix = stale ? (chinese ? " · 旧" : " · stale") : ""
             let reset = date(snapshot?.fiveHour?.resetsAt, format: "M/d HH:mm")
-            text(window(snapshot?.fiveHour) + suffix, x: x, y: 36, width: 162,
-                 tooltip: (chinese ? "5 小时窗口重置：" : "5-hour reset: ") + reset)
+            let desktopLabel = chinese ? "Claude Desktop 用量页" : "Claude Desktop Usage page"
+            text(window(snapshot?.fiveHour) + (snapshot?.fiveHour == nil ? "" : suffix), x: x, y: 36, width: 162,
+                 tooltip: fromDesktop ? desktopLabel : (chinese ? "5 小时窗口重置：" : "5-hour reset: ") + reset)
             // Model-specific weekly limits (e.g. Fable) are limits of their own; show them beside the week.
             let models = (snapshot?.modelWindows ?? [:]).sorted { $0.key < $1.key }
-                .filter { !$0.value.notStarted && $0.value.isCurrent(at: now) }
+                .filter { fromDesktop || (!$0.value.notStarted && $0.value.isCurrent(at: now)) }
             let modelText = models.prefix(2).map { " · \(ClaudeForecast.displayName($0.key)) \($0.value.remaining)%" }.joined()
             let modelTip = models.map { key, value in
-                ClaudeForecast.displayName(key) + (chinese ? " 周剩余 \(value.remaining)%，重置 " : " weekly left \(value.remaining)%, resets ")
-                    + date(value.resetsAt, format: "M/d HH:mm")
+                let reading = ClaudeForecast.displayName(key) + (chinese ? " 周剩余 \(value.remaining)%" : " weekly left \(value.remaining)%")
+                guard value.resetsAt != nil else { return reading }
+                return reading + (chinese ? "，重置 " : ", resets ") + date(value.resetsAt, format: "M/d HH:mm")
             }
-            text(window(snapshot?.week) + modelText + suffix, x: x, y: 64, width: 162,
-                 tooltip: modelTip.isEmpty ? nil : modelTip.joined(separator: "\n"))
+            let historyTip = stale && !fromDesktop ? [
+                (chinese ? "上次读数 " : "Last reading ") + date(snapshot?.checkedAt, format: "M/d HH:mm")
+            ] : []
+            let weeklyTip = historyTip + modelTip
+            text(window(snapshot?.week) + (snapshot?.week == nil ? "" : suffix) + modelText, x: x, y: 64, width: 162,
+                 tooltip: weeklyTip.isEmpty ? nil : weeklyTip.joined(separator: "\n"))
             let stock = desktop?.reading.stock(at: now) ?? snapshot?.claudeResets?.stock(at: now) ?? snapshot?.resets
             let grants = desktop?.reading.grants ?? snapshot?.claudeResets?.grants ?? []
             var grantLines = grants.filter { $0.isAvailable(at: now) }
@@ -73,10 +79,13 @@ final class QuotaBalanceView: NSView {
             text(resets(stock) + resetSuffix, x: x, y: 92, width: 162,
                  tooltip: grantLines.isEmpty ? nil : grantLines.joined(separator: "\n"))
             text(date(snapshot?.week?.resetsAt, format: "M/d HH:mm"), x: x, y: 118, width: 162, secondary: true)
-            text(date(snapshot?.checkedAt, format: "M/d HH:mm:ss"), x: x, y: 144, width: 162, secondary: true)
+            let timestamp = fromDesktop ? (chinese ? "约 " : "≈ ") + date(snapshot?.checkedAt, format: "M/d HH:mm")
+                : date(snapshot?.checkedAt, format: "M/d HH:mm:ss")
+            text(timestamp, x: x, y: 144, width: 162, secondary: true,
+                 tooltip: fromDesktop ? desktopLabel + " · " + timestamp : nil)
         }
         let advice = QuotaBalanceAdvice.make(codex: codex, claude: claude, codexReliable: codexReliable,
-                                             claudeReliable: claudeReliable, now: now, chinese: chinese)
+                                             claudeReliable: claudeReliable && !claudeFromDesktop, now: now, chinese: chinese)
         text(advice.title, x: 16, y: 172, width: 428, bold: true, tooltip: advice.detail)
         text(claudeStatus, x: 16, y: 194, width: 428, secondary: true)
         toolTip = advice.detail
@@ -122,6 +131,7 @@ final class QuotaBalanceMenuController: NSObject {
     private static let lastOutcomeAtKey = "claudeQuotaLastOutcomeAt"
     private static let lastShapeKey = "claudeQuotaLastResponseShape"
     private static let desktopResetsKey = "claudeDesktopResets"
+    private static let desktopQuotaKey = "claudeDesktopQuota"
     let item = NSMenuItem(title: "Codex + Claude", action: nil, keyEquivalent: "")
     let settingsItem = NSMenuItem(title: "Claude Code", action: nil, keyEquivalent: "")
     var onChange: (() -> Void)?
@@ -142,6 +152,8 @@ final class QuotaBalanceMenuController: NSObject {
     private var identity: String?
     private var claude: ProviderQuotaSnapshot?
     private(set) var desktopResets: ClaudeDesktopResetSnapshot?
+    private lazy var desktopQuota = defaults.data(forKey: Self.desktopQuotaKey)
+        .flatMap { try? JSONDecoder().decode(ClaudeDesktopQuotaSnapshot.self, from: $0) }
     private var codex: ProviderQuotaSnapshot?
     private var codexReliable = false
     private var lastError: ClaudeQuotaError?
@@ -182,8 +194,24 @@ final class QuotaBalanceMenuController: NSObject {
     var enabled: Bool { defaults.bool(forKey: Self.enabledKey) }
     var desktopSyncEnabled: Bool { defaults.bool(forKey: Self.desktopSyncKey) }
     var active: Bool { enabled || desktopSyncEnabled }
+    var desktopQuotaFallbackActive: Bool {
+        enabled && desktopSyncEnabled && defaults.string(forKey: Self.lastOutcomeKey) == ClaudeQuotaError.loginExpired.outcome
+    }
     var currentQuotas: (codex: ProviderQuotaSnapshot?, claude: ProviderQuotaSnapshot?, codexReliable: Bool, claudeReliable: Bool) {
         (codex, claude, codexReliable, enabled && lastError == nil)
+    }
+
+    func displayedClaude(at now: Date) -> (snapshot: ProviderQuotaSnapshot?, reliable: Bool, fromDesktop: Bool) {
+        guard enabled else { return (nil, false, false) }
+        if let claude { return (claude, lastError == nil && claude.isFresh(at: now), false) }
+        if desktopQuotaFallbackActive, let desktopQuota {
+            let snapshot = desktopQuota.quota
+            return (snapshot, snapshot.isFresh(at: now), true)
+        }
+        // A missing login or a rejected account may be a sign-out or account change.
+        let lastOutcome = defaults.string(forKey: Self.lastOutcomeKey)
+        guard lastOutcome == "ok" || lastOutcome == ClaudeQuotaError.loginExpired.outcome else { return (nil, false, false) }
+        return (history.lastWeeklySnapshot(at: now), false, false)
     }
     private func t(_ zh: String, _ en: String) -> String { chinese ? zh : en }
 
@@ -198,6 +226,13 @@ final class QuotaBalanceMenuController: NSObject {
         guard reading != nil || desktopResets != nil else { return }
         desktopResets = reading.map { ClaudeDesktopResetSnapshot(reading: $0, syncedAt: now) }
         defaults.set(desktopResets.flatMap { try? JSONEncoder().encode($0) }, forKey: Self.desktopResetsKey)
+        rebuild()
+    }
+
+    func updateDesktopQuota(_ snapshot: ClaudeDesktopQuotaSnapshot) {
+        guard desktopQuotaFallbackActive, snapshot != desktopQuota else { return }
+        desktopQuota = snapshot
+        defaults.set(try? JSONEncoder().encode(snapshot), forKey: Self.desktopQuotaKey)
         rebuild()
     }
 
@@ -282,6 +317,10 @@ final class QuotaBalanceMenuController: NSObject {
     }
 
     private func record(_ outcome: String, at now: Date) {
+        if outcome != ClaudeQuotaError.loginExpired.outcome, defaults.object(forKey: Self.desktopQuotaKey) != nil {
+            desktopQuota = nil
+            defaults.removeObject(forKey: Self.desktopQuotaKey)
+        }
         defaults.set(outcome, forKey: Self.lastOutcomeKey)
         defaults.set(now, forKey: Self.lastOutcomeAtKey)
     }
@@ -334,18 +373,21 @@ final class QuotaBalanceMenuController: NSObject {
 
     private func rebuild() {
         let now = Date()
+        let shown = displayedClaude(at: now)
         let status: String
         if !enabled { status = t("Claude Desktop 重置同步", "Claude Desktop reset sync") }
+        else if shown.fromDesktop { status = t("Claude Desktop 用量页 · 终端登录已过期", "Claude Desktop Usage page · CLI login expired") }
+        else if desktopQuotaFallbackActive { status = t("Claude Code 登录已过期 · 打开桌面用量页同步", "Claude Code login expired · open Usage in Claude Desktop") }
         else if checking { status = t("正在检查 Claude 账户额度…", "Checking Claude account quota…") }
         else if let lastError { status = "Claude · " + lastError.message(chinese: chinese) }
         else if defaults.bool(forKey: Self.credentialBlockedKey) {
             status = t("Claude 登录凭据待更新 · 更新后自动恢复", "Claude credentials unavailable · recovers after login is renewed")
         }
-        else if claude == nil { status = t("Claude 等待检查 · 冷却期结束后更新", "Claude awaiting check after cooldown") }
+        else if claude == nil { status = t("Claude 等待下一次额度检查", "Claude awaiting the next quota check") }
         else { status = t("均衡提示仅供参考 · 两家的百分比独立计算", "Pacing hint only · each provider has its own quota") }
-        item.view = active ? QuotaBalanceView(codex: codex, claude: claude, codexReliable: codexReliable,
-                                             claudeReliable: enabled && lastError == nil, claudeStatus: status, now: now,
-                                             chinese: chinese, desktopResets: desktopResets) : nil
+        item.view = active ? QuotaBalanceView(codex: codex, claude: shown.snapshot, codexReliable: codexReliable,
+                                             claudeReliable: shown.reliable, claudeStatus: status, now: now,
+                                             chinese: chinese, desktopResets: desktopResets, claudeFromDesktop: shown.fromDesktop) : nil
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let toggle = NSMenuItem(title: t("启用账户额度检查", "Enable account quota checks"), action: #selector(toggle), keyEquivalent: "")
@@ -470,6 +512,9 @@ final class QuotaBalanceMenuController: NSObject {
                 "available": desktopResets.reading.stock(at: now).count,
                 "grants": desktopResets.reading.grants.map { QuotaBalanceView.describe($0, chinese: false) }
             ] as [String: Any]
+        }
+        if desktopQuotaFallbackActive, let desktopQuota {
+            summary["claude_desktop_quota_updated_at"] = ISO8601DateFormatter().string(from: desktopQuota.updatedAt)
         }
         guard let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]) else { return }
         do {

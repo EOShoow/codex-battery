@@ -86,9 +86,11 @@ precondition(ink({ $0.claudeWeek = 86 }, x: rightDigit, y: digitRows) < 0.5, "an
 precondition(ink({ $0.availableResetCredits = nil; $0.claudeWeek = 86 }, x: leftDigit, y: digitRows) < 0.5,
              "an unknown Codex count must draw no digit")
 let fullEdge = ink({ $0.claudeWeek = 100 }, x: rightEdge, y: digitRows)
+let staleEdge = ink({ $0.claudeWeek = 100; $0.claudeWeekStale = true }, x: rightEdge, y: digitRows)
 let emptyEdge = ink({ $0.claudeWeek = 0 }, x: rightEdge, y: digitRows)
 let unknownEdge = ink({ _ in }, x: rightEdge, y: digitRows)
 precondition(fullEdge > emptyEdge * 3, "the Claude half-ring must follow its weekly quota")
+precondition(staleEdge > emptyEdge && staleEdge < fullEdge * 0.8, "old weekly readings use a muted stroke")
 precondition(unknownEdge > emptyEdge * 1.3 && unknownEdge < fullEdge * 0.7, "no Claude reading is dotted, not empty or full")
 let plain = ink({ $0.claudeResetCredits = 2 }, x: leftDigit, y: 15.5...17.5)
 let underlined = ink({ $0.claudeResetCredits = 2; $0.resetCreditsExpiringSoon = true }, x: leftDigit, y: 15.5...17.5)
