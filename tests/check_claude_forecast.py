@@ -21,6 +21,23 @@ import AppKit
 import Foundation
 
 extension AppDelegate {
+    func verifyDesktopPaceRows() {
+        renderForecast()
+        guard let view = forecastItem.view as? PaceBarsView else { fatalError("Desktop fallback needs pace bars") }
+        precondition(view.rows.map(\.name) == ["Codex", "Claude", "Fable"])
+        let desktopRows = Array(view.rows.dropFirst())
+        precondition(desktopRows.map(\.used) == [26, 45])
+        precondition(desktopRows[0].endText.contains("74%") && desktopRows[1].endText.contains("55%"))
+        precondition(desktopRows.allSatisfy { $0.projectedUsed == nil && $0.pace == nil && $0.tooltip.contains("Claude Desktop") })
+        if CommandLine.arguments.count > 2 {
+            let output = URL(fileURLWithPath: CommandLine.arguments[2]).deletingPathExtension()
+                .appendingPathExtension("desktop.png")
+            let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try! bitmap.representation(using: .png, properties: [:])!.write(to: output)
+        }
+    }
+
     func verifyMenuIsolation(defaults: UserDefaults) {
         let codexRows = [fiveHourItem, weekItem, resetCreditsItem, todayItem, quotaBurnItem,
                          forecastItem, topItem, activityItem, updatedItem]
@@ -66,6 +83,17 @@ let menuController = QuotaBalanceMenuController(defaults: menuDefaults,
     desktopAccess: { fatalError("menu layout must not probe Accessibility") },
     credentialLoader: { fatalError("menu layout must not read Claude credentials") })
 AppDelegate(quotaBalanceMenu: menuController).verifyMenuIsolation(defaults: menuDefaults)
+
+let desktopSuite = menuSuite + ".desktop"
+let desktopDefaults = UserDefaults(suiteName: desktopSuite)!
+defer { desktopDefaults.removePersistentDomain(forName: desktopSuite) }
+desktopDefaults.set(true, forKey: QuotaBalanceMenuController.enabledKey)
+desktopDefaults.set(true, forKey: "claudeDesktopSyncEnabled")
+desktopDefaults.set("credential_expired", forKey: "claudeQuotaLastOutcome")
+let desktopController = QuotaBalanceMenuController(defaults: desktopDefaults, chinese: true, desktopAccess: { true },
+    credentialLoader: { fatalError("desktop bars should not read Claude credentials") })
+desktopController.updateDesktopQuota(ClaudeDesktopQuotaSnapshot(fiveHourUsed: 3, weekUsed: 26, fableUsed: 45, updatedAt: Date()))
+AppDelegate(quotaBalanceMenu: desktopController).verifyDesktopPaceRows()
 
 let folder = URL(fileURLWithPath: CommandLine.arguments[1])
 let historyURL = folder.appendingPathComponent("support/claude-usage-history.json")

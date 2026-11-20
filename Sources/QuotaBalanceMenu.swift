@@ -136,6 +136,7 @@ final class QuotaBalanceMenuController: NSObject {
     let settingsItem = NSMenuItem(title: "Claude Code", action: nil, keyEquivalent: "")
     var onChange: (() -> Void)?
     var onSettingsChange: (() -> Void)?
+    var onDesktopQuotaSync: (() -> Void)?
     private let defaults: UserDefaults
     private let chinese: Bool
     private let client: ClaudeQuotaClient
@@ -157,6 +158,7 @@ final class QuotaBalanceMenuController: NSObject {
     private var codex: ProviderQuotaSnapshot?
     private var codexReliable = false
     private var lastError: ClaudeQuotaError?
+    private var wasUsingDesktopQuotaFallback = false
 
     init(defaults: UserDefaults = .standard, chinese: Bool? = nil,
          client: ClaudeQuotaClient = ClaudeQuotaClient(),
@@ -368,16 +370,27 @@ final class QuotaBalanceMenuController: NSObject {
         if value { refreshIfDue() }
     }
 
-    @objc private func checkNow() { refreshIfDue(manual: true) }
+    @objc private func checkNow() {
+        if desktopQuotaFallbackActive { onDesktopQuotaSync?() }
+        refreshIfDue(manual: true)
+    }
     @objc private func openUsage() { NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!) }
 
     private func rebuild() {
         let now = Date()
+        let fallbackActive = desktopQuotaFallbackActive
+        let fallbackStarted = fallbackActive && !wasUsingDesktopQuotaFallback
+        wasUsingDesktopQuotaFallback = fallbackActive
+        let canReadDesktopQuota = fallbackActive && desktopAccess()
         let shown = displayedClaude(at: now)
         let status: String
         if !enabled { status = t("Claude Desktop 重置同步", "Claude Desktop reset sync") }
-        else if shown.fromDesktop { status = t("Claude Desktop 用量页 · 终端登录已过期", "Claude Desktop Usage page · CLI login expired") }
-        else if desktopQuotaFallbackActive { status = t("Claude Code 登录已过期 · 打开桌面用量页同步", "Claude Code login expired · open Usage in Claude Desktop") }
+        else if fallbackActive && !canReadDesktopQuota { status = t("桌面用量同步 · 等待辅助功能权限", "Desktop quota sync · waiting for Accessibility access") }
+        else if shown.fromDesktop {
+            status = shown.reliable ? t("Claude Desktop 已同步 · 终端登录已过期", "Synced from Claude Desktop · CLI login expired")
+                : t("Claude Desktop 上次读数 · 终端登录已过期", "Last Claude Desktop reading · CLI login expired")
+        }
+        else if fallbackActive { status = t("Claude Code 登录已过期 · 打开桌面用量页同步", "Claude Code login expired · open Usage in Claude Desktop") }
         else if checking { status = t("正在检查 Claude 账户额度…", "Checking Claude account quota…") }
         else if let lastError { status = "Claude · " + lastError.message(chinese: chinese) }
         else if defaults.bool(forKey: Self.credentialBlockedKey) {
@@ -403,8 +416,9 @@ final class QuotaBalanceMenuController: NSObject {
         check.target = self
         let cooldown = defaults.object(forKey: Self.cooldownKey) as? Date ?? .distantPast
         let lastAttempt = defaults.object(forKey: Self.lastHTTPAttemptKey) as? Date ?? .distantPast
-        check.isEnabled = enabled && !checking && (now >= cooldown || defaults.bool(forKey: Self.credentialBlockedKey))
+        let canCheckAccount = enabled && !checking && (now >= cooldown || defaults.bool(forKey: Self.credentialBlockedKey))
             && now.timeIntervalSince(lastAttempt) >= 60 && (claude.map { now.timeIntervalSince($0.checkedAt) >= 60 } ?? true)
+        check.isEnabled = canReadDesktopQuota || canCheckAccount
         submenu.addItem(check)
         let usage = NSMenuItem(title: t("在浏览器打开 Claude 用量页", "Open Claude usage in browser"), action: #selector(openUsage), keyEquivalent: "")
         usage.target = self
@@ -466,6 +480,7 @@ final class QuotaBalanceMenuController: NSObject {
         settingsItem.submenu = submenu
         writeDiagnostics(status: status, now: now)
         onChange?()
+        if fallbackStarted { onDesktopQuotaSync?() }
     }
 
     private func writeDiagnostics(status: String, now: Date) {

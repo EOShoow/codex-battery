@@ -167,7 +167,7 @@ struct ClaudeDesktopQuotaReading: Equatable {
     let fableUsed: Double?
     let updateAge: TimeInterval
     private static let relativeAge = try! NSRegularExpression(
-        pattern: #"^(\d{1,5}|a|an)\s*(秒|分钟|小时|天|seconds?|minutes?|hours?|days?)\s*(?:前|ago)$"#)
+        pattern: #"^(?:约\s*|大约\s*|about\s+)?(\d{1,5}|一|a|an)\s*(秒|分钟|小时|天|seconds?|minutes?|hours?|days?)\s*(?:前|ago)$"#)
 
     static func parse(progress: [(Window, Double?)], updateAge: TimeInterval) -> Self? {
         var usage: [Window: Double] = [:]
@@ -184,11 +184,13 @@ struct ClaudeDesktopQuotaReading: Equatable {
         let text = label.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
         guard let heading = text.range(of: #"^(?:最后更新|上次更新|last updated)\s*[:：]?\s*"#, options: .regularExpression) else { return nil }
         let age = String(text[heading.upperBound...])
-        if ["刚刚", "just now", "less than a minute ago"].contains(age) { return 0 }
+        let compactAge = age.replacingOccurrences(of: " ", with: "")
+        if ["刚刚", "不到一分钟前", "不到1分钟前"].contains(compactAge)
+            || ["just now", "less than a minute ago", "less than 1 minute ago"].contains(age) { return 0 }
         let value = age as NSString
         guard let match = relativeAge.firstMatch(in: age, range: NSRange(location: 0, length: value.length)) else { return nil }
         let amount = value.substring(with: match.range(at: 1))
-        guard let count = amount == "a" || amount == "an" ? 1 : Double(amount) else { return nil }
+        guard let count = ["一", "a", "an"].contains(amount) ? 1 : Double(amount) else { return nil }
         switch value.substring(with: match.range(at: 2)) {
         case "秒", "second", "seconds": return count
         case "分钟", "minute", "minutes": return count * 60
@@ -218,6 +220,7 @@ final class ClaudeDesktopResetMonitor {
     private var activationObserver: NSObjectProtocol?
     private var timer: Timer?
     private var reading = false
+    private var pendingOpenPageSync: pid_t?
     private var lastResetSection: ClaudeDesktopUsageReader.ResetSection?
     private var lastQuotaReading: ClaudeDesktopQuotaReading?
     private var lastReadStage: String?
@@ -240,7 +243,7 @@ final class ClaudeDesktopResetMonitor {
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
     }
 
-    func checkForeground() {
+    private func checkForeground(pollImmediately: Bool = true) {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.bundleIdentifier == Self.bundleID, Self.hasAccess else {
             timer?.invalidate()
@@ -254,12 +257,12 @@ final class ClaudeDesktopResetMonitor {
         next.tolerance = 0.5
         RunLoop.main.add(next, forMode: .common)
         timer = next
-        poll()
+        if pollImmediately { poll() }
     }
 
-    /// A one-shot read handles an already open usage page at startup or when the menu is opened.
+    /// Check an already open usage page even when another app is in front.
     func syncOpenPage() {
-        checkForeground()
+        checkForeground(pollImmediately: false)
         guard Self.hasAccess, let app = NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleID).first else { return }
         poll(pid: app.processIdentifier, requireForeground: false)
     }
@@ -274,7 +277,11 @@ final class ClaudeDesktopResetMonitor {
     }
 
     private func poll(pid: pid_t, requireForeground: Bool) {
-        guard !reading else { return }
+        if reading {
+            // A scan already underway may have started before the terminal login expired.
+            if !requireForeground { pendingOpenPageSync = pid }
+            return
+        }
         let includeQuota = shouldReadQuota()
         if !includeQuota { lastQuotaReading = nil }
         reading = true
@@ -285,6 +292,11 @@ final class ClaudeDesktopResetMonitor {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.reading = false
+                let pending = self.pendingOpenPageSync
+                self.pendingOpenPageSync = nil
+                defer {
+                    if let pending, Self.hasAccess { self.poll(pid: pending, requireForeground: false) }
+                }
                 guard Self.hasAccess,
                       !requireForeground || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
                 if self.lastReadStage != stage {
@@ -370,7 +382,8 @@ private final class ClaudeDesktopUsageReader {
         var queue = window.map { [$0] } ?? (attribute(kAXWindowsAttribute, of: app) as? [AXUIElement] ?? [])
         guard !queue.isEmpty else { return nil }
         if stage == "window_unavailable" { stage = "usage_page_not_found" }
-        for _ in 0..<9 {
+        // Claude Code can put its settings under several extra accessibility groups in the background.
+        for _ in 0..<16 {
             var children: [AXUIElement] = []
             for element in queue.prefix(60) {
                 guard withinDeadline else { return nil }

@@ -1048,6 +1048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.applyClaudeToIcon()
         }
         quotaBalanceMenu.onSettingsChange = { [weak self] in self?.applyClaudeSettings() }
+        quotaBalanceMenu.onDesktopQuotaSync = { [weak self] in self?.claudeDesktopResetMonitor?.syncOpenPage() }
         applyClaudeSettings()
         statusItem.menu = menu
 
@@ -1711,7 +1712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
     }
 
-    /// One pace bar per quota: Codex keeps its activity-weighted forecast; Claude windows use average pace.
+    /// One bar per quota, with the latest Desktop readings when the account has no fresh reset times.
     private func renderForecast() {
         guard quotaBalanceMenu.active else {
             if let lastCodexForecast {
@@ -1724,7 +1725,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let now = Date()
         let shown = quotaBalanceMenu.displayedClaude(at: now)
         let claudeRows: [PaceRow]
-        if let snapshot = shown.snapshot, !shown.fromDesktop {
+        if let snapshot = shown.snapshot, shown.fromDesktop {
+            claudeRows = ClaudeForecast.desktopRows(snapshot: snapshot, now: now, chinese: useChinese)
+        } else if let snapshot = shown.snapshot {
             var keys = Set(snapshot.modelWindows.keys)
             if snapshot.week != nil { keys.insert("seven_day") }
             let activitySchedule = lastGoodInfo.flatMap {

@@ -89,6 +89,32 @@ enum ClaudeForecast {
         return [NSColor.systemTeal, .systemPink, .systemBrown, .systemIndigo][index % 4]
     }
 
+    /// A Desktop reading carries the percentages and data time, without the account's reset times.
+    static func desktopRows(snapshot: ProviderQuotaSnapshot, now: Date, chinese: Bool) -> [PaceRow] {
+        let stale = !snapshot.isFresh(at: now)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d HH:mm"
+        let dataTime = formatter.string(from: snapshot.checkedAt)
+
+        func row(_ key: String, _ window: ProviderQuotaWindow, index: Int) -> PaceRow {
+            let left = window.remaining
+            let used = max(0, min(100, window.used))
+            let label = stale ? (chinese ? "上次剩 \(left)% · 旧" : "Last left \(left)% · stale")
+                : (chinese ? "桌面剩 \(left)%" : "\(left)% left · Desktop")
+            let detail = chinese
+                ? "Claude Desktop 用量页 · 数据于约 \(dataTime)。取得周重置时间后更新预测。"
+                : "Claude Desktop Usage page · data at about \(dataTime). Projection resumes with a weekly reset time."
+            return PaceRow(name: displayName(key), color: color(key, index: index), used: used,
+                           projectedUsed: nil, pace: nil, endText: label, tone: .secondaryLabelColor, tooltip: detail)
+        }
+
+        let total = snapshot.week.map { [row("seven_day", $0, index: 0)] } ?? []
+        let models = snapshot.modelWindows.sorted { $0.key < $1.key }.enumerated().map { index, entry in
+            row(entry.key, entry.value, index: index)
+        }
+        return total + models
+    }
+
     /// Each window's average consumption is projected across the same local activity hours as Codex.
     static func rows(history: ClaudeUsageHistory, now: Date, chinese: Bool,
                      reliable: Bool = true, windowKeys: Set<String>? = nil,
