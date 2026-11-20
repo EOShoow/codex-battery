@@ -9,7 +9,7 @@ final class QuotaBalanceView: NSView {
     init(codex: ProviderQuotaSnapshot?, claude: ProviderQuotaSnapshot?, codexReliable: Bool,
          claudeReliable: Bool, claudeStatus: String, now: Date, chinese: Bool,
          desktopResets: ClaudeDesktopResetSnapshot? = nil, claudeFromDesktop: Bool = false,
-         localOnly: Bool = false, estimatedWeekReset: Bool = false) {
+         localOnly: Bool = false, localForecast: ClaudeLocalForecast? = nil) {
         super.init(frame: NSRect(x: 0, y: 0, width: 460, height: Self.height))
         func text(_ value: String, x: CGFloat, y: CGFloat, width: CGFloat, bold: Bool = false,
                   secondary: Bool = false, tooltip: String? = nil) {
@@ -61,11 +61,18 @@ final class QuotaBalanceView: NSView {
             // Model-specific weekly limits (e.g. Fable) are limits of their own; show them beside the week.
             let models = (snapshot?.modelWindows ?? [:]).sorted { $0.key < $1.key }
                 .filter { fromDesktop || (!$0.value.notStarted && $0.value.isCurrent(at: now)) }
-            let modelText = models.prefix(2).map { " · \(ClaudeForecast.displayName($0.key)) \($0.value.remaining)%" }.joined()
-            let modelTip = models.map { key, value in
+            var modelText = models.prefix(2).map { " · \(ClaudeForecast.displayName($0.key)) \($0.value.remaining)%" }.joined()
+            var modelTip = models.map { key, value in
                 let reading = ClaudeForecast.displayName(key) + (chinese ? " 周剩余 \(value.remaining)%" : " weekly left \(value.remaining)%")
                 guard value.resetsAt != nil else { return reading }
                 return reading + (chinese ? "，重置 " : ", resets ") + date(value.resetsAt, format: "M/d HH:mm")
+            }
+            if local, let forecast = localForecast, let fable = forecast.fable, fable.isInCycle(at: now) {
+                let remaining = ProviderQuotaWindow(used: fable.used, resetsAt: fable.reset).remaining
+                let old = now.timeIntervalSince(fable.time) > 15 * 60
+                modelText += " · Fable \(remaining)%" + (old ? (chinese ? " · 旧" : " · old") : "")
+                modelTip.append("Fable \(remaining)% · " + forecast.fableSourceLabel(chinese: chinese) + " · " +
+                    date(fable.time, format: "M/d HH:mm:ss") + (chinese ? "，重置 " : ", resets ") + date(fable.reset, format: "M/d HH:mm"))
             }
             let historyTip = stale && !fromDesktop ? [
                 (chinese ? "上次读数 " : "Last reading ") + date(snapshot?.checkedAt, format: "M/d HH:mm")
@@ -81,7 +88,7 @@ final class QuotaBalanceView: NSView {
             let resetSuffix = stock != nil && desktop == nil ? suffix : ""
             text(resets(stock) + resetSuffix, x: x, y: 92, width: 162,
                  tooltip: grantLines.isEmpty ? nil : grantLines.joined(separator: "\n"))
-            let approximate = local && estimatedWeekReset && snapshot?.week?.resetsAt != nil
+            let approximate = local && localForecast?.resetSource == .estimatedReset && snapshot?.week?.resetsAt != nil
             text((approximate ? "≈ " : "") + date(snapshot?.week?.resetsAt, format: "M/d HH:mm"), x: x, y: 118, width: 162, secondary: true)
             let timestamp = fromDesktop ? (chinese ? "约 " : "≈ ") + date(snapshot?.checkedAt, format: "M/d HH:mm")
                 : date(snapshot?.checkedAt, format: "M/d HH:mm:ss")
@@ -152,6 +159,7 @@ final class QuotaBalanceMenuController: NSObject {
     private let diagnosticURL: URL?
     private let historyURL: URL?
     private let planHistoryURL: URL?
+    private var cachedUsage: (organization: String, sample: ClaudeUsageCache.Sample)?
     private(set) var localForecast: ClaudeLocalForecast?
     private(set) lazy var history = ClaudeUsageHistory(url: historyURL)
     private var requestsStarted = 0
@@ -242,10 +250,17 @@ final class QuotaBalanceMenuController: NSObject {
     private func readLocalForecast(at now: Date) {
         let outcome = defaults.string(forKey: Self.lastOutcomeKey)
         let allowHistory = outcome == "ok" || outcome == ClaudeQuotaError.loginExpired.outcome
-        localForecast = ClaudePlanHistory.read(planHistoryURL, at: now).map {
-            ClaudeLocalForecast(plan: $0, history: allowHistory ? history : nil, page: allowHistory ? desktopQuota : nil,
-                                calibration: calibration, now: now)
+        guard let planHistoryURL, let plan = ClaudePlanHistory.read(planHistoryURL, at: now) else {
+            cachedUsage = nil
+            localForecast = nil
+            return
         }
+        let directory = planHistoryURL.deletingLastPathComponent().appendingPathComponent("Cache/Cache_Data", isDirectory: true)
+        let previous = cachedUsage?.organization == plan.organization ? cachedUsage?.sample : nil
+        let sample = ClaudeUsageCache.latest(in: directory, organization: plan.organization, at: now, previous: previous)
+        cachedUsage = sample.map { (plan.organization, $0) }
+        localForecast = ClaudeLocalForecast(plan: plan, history: allowHistory ? history : nil, page: allowHistory ? desktopQuota : nil,
+                                           calibration: calibration, cachedUsage: sample, now: now)
     }
 
     @objc private func toggleLocalForecast() { setLocalOnly(!localOnly) }
@@ -255,7 +270,7 @@ final class QuotaBalanceMenuController: NSObject {
         cancelAccountCheck()
         defaults.set(value, forKey: Self.localOnlyKey)
         desktopResets = desktopSyncEnabled ? storedDesktopResets() : nil
-        if value { readLocalForecast(at: Date()) } else { localForecast = nil }
+        if value { readLocalForecast(at: Date()) } else { localForecast = nil; cachedUsage = nil }
         rebuild()
         onSettingsChange?()
     }
@@ -310,7 +325,7 @@ final class QuotaBalanceMenuController: NSObject {
     func refreshIfDue(manual: Bool = false, now: Date = Date()) {
         if localOnly {
             readLocalForecast(at: now)
-            rebuild()
+            rebuild(at: now)
             return
         }
         guard enabled, !checking else { return }
@@ -495,8 +510,7 @@ final class QuotaBalanceMenuController: NSObject {
         return true
     }
 
-    private func rebuild() {
-        let now = Date()
+    private func rebuild(at now: Date = Date()) {
         let fallbackActive = desktopQuotaFallbackActive
         let fallbackStarted = fallbackActive && !wasUsingDesktopQuotaFallback
         wasUsingDesktopQuotaFallback = fallbackActive
@@ -525,7 +539,7 @@ final class QuotaBalanceMenuController: NSObject {
         item.view = active ? QuotaBalanceView(codex: codex, claude: shown.snapshot, codexReliable: codexReliable,
                                              claudeReliable: shown.reliable, claudeStatus: status, now: now,
                                              chinese: chinese, desktopResets: desktopResets, claudeFromDesktop: shown.fromDesktop,
-                                             localOnly: localOnly, estimatedWeekReset: localForecast?.resetSource == .estimatedReset) : nil
+                                             localOnly: localOnly, localForecast: localForecast) : nil
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let local = NSMenuItem(title: t("仅用本机记录预测（免授权）", "Local forecast only (no permissions)"),
@@ -567,7 +581,7 @@ final class QuotaBalanceMenuController: NSObject {
         submenu.addItem(usage)
         submenu.addItem(.separator())
         var notes = localOnly ? [t("只读本机文件，随菜单和现有刷新更新", "Reads local files on menu open and scheduled refresh"),
-                                 t("Fable 取自独立读数，可在本机录入", "Fable uses its own saved or manually entered reading")] :
+                                 t("Fable 随 Claude Desktop 用量缓存自动更新", "Fable updates from Claude Desktop’s local usage cache")] :
                     [t("复用本机 Claude Code 登录；仅读取账户用量", "Uses local Claude Code login; account usage only"),
                      t("随现有刷新检查，自动间隔至少 5 分钟", "Shares refreshes; automatic interval at least 5 minutes"),
                      t("额度检查不调用模型；任务由新任务入口发起", "Quota checks do not run models; use New task for work")]
@@ -637,6 +651,12 @@ final class QuotaBalanceMenuController: NSObject {
             "claude_desktop_accessibility": desktopSyncEnabled && desktopAccess(),
             "claude_requests_started_this_process": requestsStarted, "status": status, "menu_text": fields
         ]
+        if localOnly, let forecast = localForecast, let reading = forecast.fable, reading.isInCycle(at: now) {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            summary["claude_local_fable"] = ["source": forecast.fableSource.rawValue, "used_percent": reading.used,
+                                            "sampled_at": iso.string(from: reading.time), "resets_at": iso.string(from: reading.reset)] as [String: Any]
+        }
         // Outcome codes only (e.g. credential_expired, http_401, ok); never tokens or response bodies.
         if let outcome = defaults.string(forKey: Self.lastOutcomeKey) { summary["claude_last_outcome"] = outcome }
         if let claude { summary["claude_response_keys"] = claude.responseKeys }

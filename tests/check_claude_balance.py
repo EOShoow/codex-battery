@@ -666,6 +666,7 @@ with tempfile.TemporaryDirectory() as folder:
     subprocess.run([
         "swiftc", str(main), str(root / "Sources/ClaudeQuota.swift"), str(root / "Sources/ClaudeDesktopResets.swift"),
         str(root / "Sources/QuotaBalanceMenu.swift"), str(root / "Sources/ClaudeForecast.swift"), str(root / "Sources/ClaudeLocalForecast.swift"),
+        str(root / "Sources/ClaudeUsageCache.swift"),
         str(root / "Sources/WeeklyActivitySchedule.swift"), str(root / "Sources/PaceBars.swift"), "-framework", "AppKit", "-o", str(binary)
     ], check=True)
     command = [str(binary)]

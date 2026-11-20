@@ -125,7 +125,7 @@ struct ClaudePlanHistory {
 
 /// Optional readings the user entered from Usage. Each meter keeps its own reset and sample time.
 struct ClaudeLocalCalibration: Codable {
-    struct Reading: Codable {
+    struct Reading: Codable, Equatable {
         let used: Double
         let time: Date
         let reset: Date
@@ -142,7 +142,7 @@ struct ClaudeLocalCalibration: Codable {
 
 struct ClaudeLocalForecast {
     typealias Reading = ClaudeLocalCalibration.Reading
-    enum Source { case matchedHistory, estimatedReset, manual, desktop }
+    enum Source: String { case matchedHistory, estimatedReset, manual, desktop, desktopUsageCache }
     let plan: ClaudePlanHistory
     let weekReset: Date?
     let resetSource: Source
@@ -150,7 +150,7 @@ struct ClaudeLocalForecast {
     let fableSource: Source
 
     init(plan: ClaudePlanHistory, history: ClaudeUsageHistory?, page: ClaudeDesktopQuotaSnapshot?,
-         calibration: ClaudeLocalCalibration?, now: Date) {
+         calibration: ClaudeLocalCalibration?, cachedUsage: ClaudeUsageCache.Sample? = nil, now: Date) {
         self.plan = plan
         let manual = calibration?.organization == plan.organization ? calibration : nil
         let account = history.flatMap { plan.matchingAccount($0) }
@@ -180,15 +180,30 @@ struct ClaudeLocalForecast {
             model = entry
             source = .manual
         }
+        var modelTime = model?.time
         if let previous = model, account != nil, let page, page.updatedAt >= previous.time, page.updatedAt <= now,
            let used = page.fableUsed, plan.matchesPage(page) {
             // A drop in Fable may mean it was separately reset. Its old reset is then unusable.
             let reading = Reading(used: used, time: page.updatedAt, reset: previous.reset)
             model = used >= previous.used && reading.isInCycle(at: now) ? reading : nil
+            modelTime = page.updatedAt
             source = .desktop
+        }
+        if let cachedUsage, modelTime.map({ $0 <= cachedUsage.time }) ?? true {
+            model = cachedUsage.fable.flatMap { $0.isInCycle(at: now) ? $0 : nil }
+            source = .desktopUsageCache
         }
         self.fable = model
         self.fableSource = source
+    }
+
+    func fableSourceLabel(chinese: Bool) -> String {
+        switch fableSource {
+        case .desktopUsageCache: return chinese ? "Claude Desktop 本机用量缓存" : "Claude Desktop local usage cache"
+        case .manual: return chinese ? "手动录入 Fable" : "Manual Fable reading"
+        case .desktop: return chinese ? "Claude Desktop 上次 Fable 读数" : "Last Fable reading from Claude Desktop"
+        default: return chinese ? "本机保存的 Fable 账户读数" : "Saved Fable account reading"
+        }
     }
 
     var snapshot: ProviderQuotaSnapshot {
@@ -230,14 +245,11 @@ struct ClaudeLocalForecast {
 
         if let fable, fable.isInCycle(at: now) {
             let age = now.timeIntervalSince(fable.time)
-            let source = fableSource == .manual ? t("手动录入 Fable", "Manual Fable reading")
-                : (fableSource == .desktop ? t("Claude Desktop 上次 Fable 读数", "Last Fable reading from Claude Desktop")
-                                           : t("本机保存的 Fable 账户读数", "Saved Fable account reading"))
-            rows.append(weekly("seven_day_fable", fable, source, historical: age > 900, stale: age > 86400))
+            rows.append(weekly("seven_day_fable", fable, fableSourceLabel(chinese: chinese), historical: age > 900, stale: age > 86400))
         } else {
             rows.append(PaceRow(name: "Fable", color: ClaudeForecast.color("seven_day_fable", index: 0), used: nil,
-                                projectedUsed: nil, pace: nil, endText: t("待录入读数", "Reading needed"), tone: .secondaryLabelColor,
-                                tooltip: t("在 Claude Code 子菜单录入本周 Fable 已用百分比和它的重置时间。", "Enter Fable usage and its reset in the Claude Code submenu.")))
+                                projectedUsed: nil, pace: nil, endText: t("待自动更新", "Waiting for usage"), tone: .secondaryLabelColor,
+                                tooltip: t("等待 Claude Desktop 保存本周 Fable 独立用量。", "Waiting for Claude Desktop to save a Fable reading for this week.")))
         }
         return rows
     }

@@ -143,7 +143,7 @@ If a row is truncated, hover it to see the full value in a tooltip.
 Choose **Claude Code → Local forecast only (no permissions)** to read the 5-hour and weekly usage that Claude Desktop saves on this Mac. This mode pauses Claude account checks and Desktop interface sync. It needs no CLI login, Keychain access or macOS Accessibility permission. Menu opens and scheduled refreshes reread the file. A total older than 15 minutes is marked stale and its projection pauses. If Claude Desktop stops sampling, open Claude’s own menu bar icon.
 
 - **Claude weekly** uses the latest local percentage. You can set the reset time manually or use account history that matches this week’s local usage. Two consecutive weekly drops at closely matching times can also establish an approximate reset, marked **≈**. Otherwise the forecast shows the next 24 hours once at least 6 hours of observations are available from the last day.
-- **Fable** has its own limit. The tray history contains only the total weekly and 5-hour percentages. A matching Fable reading from this cycle can supply an independent projection. **Enter Fable reading…** also accepts its observed usage and its own reset time. Hover for the source and timestamp. Projections based on readings older than 15 minutes are marked **old** and pause after 24 hours. A new model cycle needs a new reading.
+- **Fable** updates automatically from the Usage response that Claude Desktop caches for the current organization. The weekly panel shows Fable’s remaining percentage. Its forecast uses the model’s own usage and reset time. Hover for the sample time. If Desktop stops updating, readings older than 15 minutes are marked **old**, projections pause after 24 hours, and a new cycle needs a new reading. The cache format can change with Desktop updates. When the cache is unavailable, an independent reading from this cycle can supply the forecast. Manual calibration is optional.
 
 The local source is `~/Library/Application Support/Claude/plan-usage-history.json` (currently version 2). If it is missing or its format changes, the menu waits for a readable sample. This mode provides forecasts only. Manual readings are stored per organization in local preferences.
 
@@ -289,6 +289,8 @@ git pull
 ```
 
 ## Build Manually
+
+For Fable’s compressed cache entries, install `zstd` with Homebrew before building. `build.sh` links the decoder statically, so the installed app needs no Homebrew runtime. Builds without zstd can still read uncompressed usage entries.
 
 ```bash
 ./build.sh

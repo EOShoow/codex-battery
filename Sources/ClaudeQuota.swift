@@ -290,6 +290,23 @@ final class ClaudeQuotaClient: NSObject, URLSessionTaskDelegate {
         return "other"
     }
 
+    static func scopedModelKey(_ row: [String: Any]) -> String? {
+        guard row["kind"] as? String == "weekly_scoped", let scope = row["scope"] as? [String: Any],
+              let model = scope["model"] as? [String: Any], let name = model["display_name"] as? String else { return nil }
+        let slug = name.lowercased().map { $0.isLetter || $0.isNumber ? String($0) : "_" }.joined()
+            .split(separator: "_").joined(separator: "_").prefix(40)
+        return slug.isEmpty ? nil : "seven_day_" + slug
+    }
+
+    static func scopedWindow(_ row: [String: Any]) -> ProviderQuotaWindow? {
+        let reset = row["resets_at"]
+        let date = (reset as? String).flatMap(ProviderQuotaSnapshot.date)
+        guard let number = row["percent"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite, (0...1000).contains(number.doubleValue),
+              reset == nil || reset is NSNull || date != nil else { return nil }
+        return ProviderQuotaWindow(used: number.doubleValue, resetsAt: date)
+    }
+
     static func decode(_ data: Data, now: Date) throws -> ProviderQuotaSnapshot {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ClaudeQuotaError.invalidResponse
@@ -348,19 +365,10 @@ final class ClaudeQuotaClient: NSObject, URLSessionTaskDelegate {
         // limit of its own and joins the model windows under a `seven_day_<model>` key.
         if let raw = root["limits"], !(raw is NSNull) {
             if let rows = raw as? [Any] {
-                for case let row as [String: Any] in rows.prefix(64) where row["kind"] as? String == "weekly_scoped" {
-                    guard let scope = row["scope"] as? [String: Any], let model = scope["model"] as? [String: Any],
-                          let name = model["display_name"] as? String else { continue }
-                    let slug = name.lowercased().map { $0.isLetter || $0.isNumber ? String($0) : "_" }.joined()
-                        .split(separator: "_").joined(separator: "_").prefix(40)
-                    guard !slug.isEmpty else { continue }
-                    let key = "seven_day_" + slug
-                    let reset = row["resets_at"]
-                    let resetDate = (reset as? String).flatMap(ProviderQuotaSnapshot.date)
-                    if let number = row["percent"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-                       number.doubleValue.isFinite, (0...1000).contains(number.doubleValue),
-                       reset == nil || reset is NSNull || resetDate != nil {
-                        models[key] = ProviderQuotaWindow(used: number.doubleValue, resetsAt: resetDate)
+                for case let row as [String: Any] in rows.prefix(64) {
+                    guard let key = scopedModelKey(row) else { continue }
+                    if let window = scopedWindow(row) {
+                        models[key] = window
                         unreadable.removeAll { $0 == key }
                         shapes[key] = nil
                     } else if models[key] == nil, !unreadable.contains(key) {
