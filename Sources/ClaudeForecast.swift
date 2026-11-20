@@ -119,82 +119,86 @@ enum ClaudeForecast {
     static func rows(history: ClaudeUsageHistory, now: Date, chinese: Bool,
                      reliable: Bool = true, windowKeys: Set<String>? = nil,
                      activitySchedule: WeeklyActivitySchedule? = nil) -> [PaceRow] {
-        let nowAt = now.timeIntervalSince1970
-        let week = ClaudeUsageHistory.weekSeconds
         let keys = history.windows.keys.filter { windowKeys?.contains($0) ?? true }.sorted { a, b in
-            a == "seven_day" ? true : (b == "seven_day" ? false : a < b)
+            a == "seven_day" ? b != a : (b != "seven_day" && a < b)
         }
         var modelIndex = 0
-        var result: [PaceRow] = []
-        for key in keys {
-            guard let window = history.windows[key], window.resetsAt > nowAt,
-                  let last = window.samples.last, last.count == 2 else { continue }
-            let color = color(key, index: key == "seven_day" ? 0 : modelIndex)
+        return keys.compactMap { key in
+            guard let window = history.windows[key], window.resetsAt > now.timeIntervalSince1970,
+                  let last = window.samples.last, last.count == 2 else { return nil }
+            let index = key == "seven_day" ? 0 : modelIndex
             if key != "seven_day" { modelIndex += 1 }
-            let start = window.resetsAt - week
-            let used = max(0, min(100, last[1]))
-            let pace = max(0, min(1, (nowAt - start) / week))
-            let name = displayName(key)
-            let stale = !reliable || nowAt - last[0] > 15 * 60
-            let elapsedHours = (last[0] - start) / 3600
-            let remainingHours = (window.resetsAt - last[0]) / 3600
-            let usedText = chinese ? "本周已用 \(Int(used.rounded()))%" : "\(Int(used.rounded()))% used this week"
-            if stale {
-                let remaining = Int((100 - used).rounded(.down))
-                result.append(PaceRow(name: name, color: color, used: used, projectedUsed: nil, pace: nil,
-                                      endText: chinese ? "上次剩 \(remaining)% · 旧" : "Last left \(remaining)% · stale",
-                                      tone: .secondaryLabelColor,
-                                      tooltip: chinese ? "上次读数，\(usedText)。等待账户额度更新。"
-                                                       : "Last reading, \(usedText). Waiting for updated account quota."))
-                continue
-            }
-            guard elapsedHours >= 6 else {
-                result.append(PaceRow(name: name, color: color, used: used, projectedUsed: nil, pace: pace,
-                                      endText: chinese ? "积累中" : "building", tone: .secondaryLabelColor,
-                                      tooltip: chinese ? "\(name)：\(usedText)。开周不足 6 小时，暂不推算。"
-                                                       : "\(name): \(usedText). Under 6 hours into the week; no projection yet."))
-                continue
-            }
-            let elapsedWeight = activitySchedule.map { max($0.weight(from: start, to: last[0]), 1 / 60) } ?? elapsedHours
-            let remainingWeight = activitySchedule?.weight(from: last[0], to: window.resetsAt) ?? remainingHours
-            let rate = used / elapsedWeight
-            let projected = used + rate * remainingWeight
-            let endText: String
-            if projected >= 100, rate > 0 {
-                let weightToExhaust = (100 - used) / rate
-                let exhaustAt: Double
-                if let activitySchedule {
-                    exhaustAt = activitySchedule.timestamp(from: last[0], to: window.resetsAt,
-                                                            requiring: weightToExhaust) ?? window.resetsAt
-                } else {
-                    exhaustAt = last[0] + weightToExhaust * 3600
-                }
-                let early = max(0, (window.resetsAt - exhaustAt) / 3600)
-                let earlyText = early >= 24 ? String(format: chinese ? "%.1f 天" : "%.1f days", early / 24)
-                                            : String(format: chinese ? "%.0f 小时" : "%.0f hours", early)
-                endText = chinese ? "提前 \(earlyText)用完" : "Out \(earlyText) early"
-            } else {
-                let left = Int(max(0, 100 - projected).rounded())
-                endText = chinese ? "重置时剩 \(left)%" : "\(left)% left at reset"
-            }
-            let reset = DateFormatter()
-            reset.dateFormat = "M/d HH:mm"
-            let resetText = reset.string(from: Date(timeIntervalSince1970: window.resetsAt))
-            let method: String
-            if activitySchedule != nil {
-                method = chinese ? "与 Codex 共用本机作息，按此额度本周的活跃时段消耗速度推算。"
-                                 : "Uses the same local activity hours as Codex and this quota's pace during those hours."
-            } else {
-                method = chinese ? "作息样本不足，暂按本周平均速度推算。"
-                                 : "While activity history builds, this uses the average pace over elapsed hours."
-            }
-            result.append(PaceRow(
-                name: name, color: color, used: used, projectedUsed: projected, pace: pace, endText: endText,
-                tone: PaceRow.tone(remaining: 100 - projected, runsOut: projected >= 100),
-                tooltip: chinese
-                    ? "\(name) · \(usedText)，\(endText)（\(resetText) 重置）。\(method)竖线是均匀用到重置时此刻应在的位置。"
-                    : "\(name) · \(usedText), \(endText) (resets \(resetText)). \(method) The tick marks where even pacing would be now."))
+            let age = now.timeIntervalSince1970 - last[0]
+            return weeklyRow(key: key, index: index, usage: last[1], sampledAt: last[0], resetAt: window.resetsAt,
+                             now: now, chinese: chinese, stale: !reliable || !(0...900).contains(age),
+                             activitySchedule: activitySchedule)
         }
-        return result
+    }
+
+    static func weeklyRow(key: String, index: Int, usage: Double, sampledAt: Double, resetAt: Double,
+                          now: Date, chinese: Bool, stale: Bool, activitySchedule: WeeklyActivitySchedule?) -> PaceRow {
+        let week = ClaudeUsageHistory.weekSeconds
+        let nowAt = now.timeIntervalSince1970
+        let start = resetAt - week
+        let used = max(0, min(100, usage))
+        let pace = max(0, min(1, (nowAt - start) / week))
+        let name = displayName(key)
+        let color = color(key, index: index)
+        let elapsedHours = (sampledAt - start) / 3600
+        let remainingHours = (resetAt - sampledAt) / 3600
+        let usedText = chinese ? "本周已用 \(Int(used.rounded()))%" : "\(Int(used.rounded()))% used this week"
+        if stale {
+            let remaining = Int((100 - used).rounded(.down))
+            return PaceRow(name: name, color: color, used: used, projectedUsed: nil, pace: nil,
+                           endText: chinese ? "上次剩 \(remaining)% · 旧" : "Last left \(remaining)% · stale",
+                           tone: .secondaryLabelColor,
+                           tooltip: chinese ? "上次读数，\(usedText)。等待账户额度更新。"
+                                            : "Last reading, \(usedText). Waiting for updated account quota.")
+        }
+        guard elapsedHours >= 6 else {
+            return PaceRow(name: name, color: color, used: used, projectedUsed: nil, pace: pace,
+                           endText: chinese ? "积累中" : "building", tone: .secondaryLabelColor,
+                           tooltip: chinese ? "\(name)：\(usedText)。开周不足 6 小时，暂不推算。"
+                                            : "\(name): \(usedText). Under 6 hours into the week; no projection yet.")
+        }
+        let elapsedWeight = activitySchedule.map { max($0.weight(from: start, to: sampledAt), 1 / 60) } ?? elapsedHours
+        let remainingWeight = activitySchedule?.weight(from: sampledAt, to: resetAt) ?? remainingHours
+        let rate = used / elapsedWeight
+        let projected = used + rate * remainingWeight
+        let endText: String
+        if projected >= 100, rate > 0 {
+            let weightToExhaust = (100 - used) / rate
+            let exhaustAt: Double
+            if let activitySchedule {
+                exhaustAt = activitySchedule.timestamp(from: sampledAt, to: resetAt,
+                                                        requiring: weightToExhaust) ?? resetAt
+            } else {
+                exhaustAt = sampledAt + weightToExhaust * 3600
+            }
+            let early = max(0, (resetAt - exhaustAt) / 3600)
+            let earlyText = early >= 24 ? String(format: chinese ? "%.1f 天" : "%.1f days", early / 24)
+                                        : String(format: chinese ? "%.0f 小时" : "%.0f hours", early)
+            endText = chinese ? "提前 \(earlyText)用完" : "Out \(earlyText) early"
+        } else {
+            let left = Int(max(0, 100 - projected).rounded())
+            endText = chinese ? "重置时剩 \(left)%" : "\(left)% left at reset"
+        }
+        let reset = DateFormatter()
+        reset.dateFormat = "M/d HH:mm"
+        let resetText = reset.string(from: Date(timeIntervalSince1970: resetAt))
+        let method: String
+        if activitySchedule != nil {
+            method = chinese ? "与 Codex 共用本机作息，按此额度本周的活跃时段消耗速度推算。"
+                             : "Uses the same local activity hours as Codex and this quota's pace during those hours."
+        } else {
+            method = chinese ? "作息样本不足，暂按本周平均速度推算。"
+                             : "While activity history builds, this uses the average pace over elapsed hours."
+        }
+        return PaceRow(
+            name: name, color: color, used: used, projectedUsed: projected, pace: pace, endText: endText,
+            tone: PaceRow.tone(remaining: 100 - projected, runsOut: projected >= 100),
+            tooltip: chinese
+                ? "\(name) · \(usedText)，\(endText)（\(resetText) 重置）。\(method)竖线是均匀用到重置时此刻应在的位置。"
+                : "\(name) · \(usedText), \(endText) (resets \(resetText)). \(method) The tick marks where even pacing would be now.")
     }
 }

@@ -1018,7 +1018,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         diagnosticURL: FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Caches/CodexBattery/quota-status.json"),
         historyURL: FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/CodexBattery/claude-usage-history.json")
+            .appendingPathComponent("Library/Application Support/CodexBattery/claude-usage-history.json"),
+        planHistoryURL: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude/plan-usage-history.json")
     )) {
         self.quotaBalanceMenu = quotaBalanceMenu
         super.init()
@@ -1307,7 +1309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if desktopResets == nil, let resetStock { parts.append(t("可用重置 \(resetStock.count)", "resets \(resetStock.count)")) }
             if !parts.isEmpty {
-                let source = shown.fromDesktop ? "Claude Desktop" : "Claude Code"
+                let source = quotaBalanceMenu.localOnly ? t("Claude 本机记录", "Claude tray history") : (shown.fromDesktop ? "Claude Desktop" : "Claude Code")
                 lines.append(source + ": " + parts.joined(separator: " · ") + (shown.reliable ? "" : t("  旧数据", "  cached")))
             }
         }
@@ -1724,16 +1726,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let now = Date()
         let shown = quotaBalanceMenu.displayedClaude(at: now)
+        let activitySchedule = lastGoodInfo.flatMap {
+            WeeklyActivitySchedule(weights: $0.weeklyHabitWeights,
+                                   timeZoneOffsetSeconds: $0.weeklyHabitTimeZoneOffsetSeconds)
+        }
         let claudeRows: [PaceRow]
-        if let snapshot = shown.snapshot, shown.fromDesktop {
+        if quotaBalanceMenu.localOnly {
+            claudeRows = quotaBalanceMenu.localForecast?.rows(at: now, chinese: useChinese, activity: activitySchedule) ?? []
+        } else if let snapshot = shown.snapshot, shown.fromDesktop {
             claudeRows = ClaudeForecast.desktopRows(snapshot: snapshot, now: now, chinese: useChinese)
         } else if let snapshot = shown.snapshot {
             var keys = Set(snapshot.modelWindows.keys)
             if snapshot.week != nil { keys.insert("seven_day") }
-            let activitySchedule = lastGoodInfo.flatMap {
-                WeeklyActivitySchedule(weights: $0.weeklyHabitWeights,
-                                       timeZoneOffsetSeconds: $0.weeklyHabitTimeZoneOffsetSeconds)
-            }
             claudeRows = ClaudeForecast.rows(history: quotaBalanceMenu.history, now: now, chinese: useChinese,
                                              reliable: shown.reliable, windowKeys: keys, activitySchedule: activitySchedule)
         } else {

@@ -38,6 +38,17 @@ extension AppDelegate {
         }
     }
 
+    func verifyLocalMenu() {
+        quotaBalanceMenu.onChange = { [weak self] in self?.renderForecast() }
+        applyClaudeSettings()
+        precondition(claudeDesktopResetMonitor == nil && taskLauncher == nil)
+        precondition(menu.items.first === quotaBalanceMenu.item)
+        let view = forecastItem.view as! PaceBarsView
+        precondition(view.rows.map(\.name) == ["Codex", "Claude", "Fable · 旧"] ||
+                     view.rows.map(\.name) == ["Codex", "Claude", "Fable · old"])
+        precondition(view.rows[1].projectedUsed != nil && view.rows[2].projectedUsed != nil)
+    }
+
     func verifyMenuIsolation(defaults: UserDefaults) {
         let codexRows = [fiveHourItem, weekItem, resetCreditsItem, todayItem, quotaBurnItem,
                          forecastItem, topItem, activityItem, updatedItem]
@@ -171,6 +182,115 @@ partial.record(snapshot(at: now, week: 13, fable: nil))
 precondition(partial.lastWeeklySnapshot(at: now)?.modelWindows.isEmpty == true,
              "the last total must not be paired with a model value from another check")
 
+// The tray cache keeps each organization's samples separate. This suite never touches a real account.
+let planURL = folder.appendingPathComponent("plan-usage-history.json")
+let a = now.addingTimeInterval(-8 * 3600)
+let b = now.addingTimeInterval(-3 * 3600)
+let c = now.addingTimeInterval(-40 * 60)
+func tray(_ at: Date, _ used: Any, _ org: String = "one", _ five: Any = 10) -> [String: Any] {
+    ["org": org, "t": floor(at.timeIntervalSince1970 * 1000), "u": ["fh": five, "sd": used]]
+}
+func savePlan(_ samples: [[String: Any]], version: Int = 2) {
+    try! JSONSerialization.data(withJSONObject: ["version": version, "samples": samples]).write(to: planURL, options: .atomic)
+}
+let savedHistory = ClaudeUsageHistory(url: folder.appendingPathComponent("account.json"))
+savedHistory.record(snapshot(at: a, week: 10, fable: 20))
+savedHistory.record(snapshot(at: b, week: 20, fable: 35))
+let entries = [tray(a, 10), tray(b, 20), tray(c, 25), tray(now, 27)]
+savePlan(entries.reversed())
+let plan = ClaudePlanHistory.read(planURL, at: now)!
+precondition(plan.samples.map(\.week) == [10, 20, 25, 27])
+let page = ClaudeDesktopQuotaSnapshot(fiveHourUsed: 10, weekUsed: 25, fableUsed: 45, updatedAt: c)
+let local = ClaudeLocalForecast(plan: plan, history: savedHistory, page: page, calibration: nil, now: now)
+let localRows = local.rows(at: now, chinese: false, activity: nil)
+precondition(abs(local.weekReset!.timeIntervalSince(reset)) < 0.001 && abs(local.fable!.reset.timeIntervalSince(fableReset)) < 0.001 && local.fable?.time == c, "use each meter’s own reset and independent reading time")
+precondition(localRows.map(\.name) == ["Claude", "Fable · old"] && localRows.map(\.used) == [27, 45])
+precondition(localRows.allSatisfy { $0.projectedUsed != nil } && localRows[1].tooltip.contains("Claude Desktop"))
+precondition(local.snapshot.modelWindows.isEmpty, "an old Fable measurement must never carry the total's fresh timestamp")
+let afterDay = local.rows(at: now.addingTimeInterval(day), chinese: false, activity: nil)
+precondition(afterDay.allSatisfy { $0.projectedUsed == nil })
+let modelReset = ClaudeDesktopQuotaSnapshot(fiveHourUsed: 10, weekUsed: 25, fableUsed: 2, updatedAt: c)
+precondition(ClaudeLocalForecast(plan: plan, history: savedHistory, page: modelReset, calibration: nil, now: now).fable == nil)
+let clean = ClaudeLocalForecast(plan: plan, history: nil, page: page, calibration: nil, now: now)
+let cleanRows = clean.rows(at: now, chinese: false, activity: nil)
+precondition(clean.weekReset == nil && cleanRows[0].endText == "~22% left in 24h" && cleanRows[0].pace == nil)
+precondition(cleanRows[1].used == nil && cleanRows[1].projectedUsed == nil, "total usage cannot supply a model reading")
+let conflicting = ClaudeUsageHistory(url: nil)
+conflicting.record(snapshot(at: a, week: 10, fable: 20))
+conflicting.record(snapshot(at: b, week: 20, fable: 35))
+conflicting.record(snapshot(at: c, week: 22, fable: 40))
+precondition(plan.matchingAccount(conflicting) == nil, "later conflicting overlap invalidates an apparent match")
+
+let disabledAccount = menuSuite + ".local"
+let localDefaults = UserDefaults(suiteName: disabledAccount)!
+defer { localDefaults.removePersistentDomain(forName: disabledAccount) }
+for key in [QuotaBalanceMenuController.localOnlyKey, QuotaBalanceMenuController.enabledKey, "claudeDesktopSyncEnabled"] {
+    localDefaults.set(true, forKey: key)
+}
+localDefaults.set("credential_expired", forKey: "claudeQuotaLastOutcome")
+localDefaults.set(try! JSONEncoder().encode(page), forKey: "claudeDesktopQuota")
+let diagnostic = folder.appendingPathComponent("local-diagnostic.json")
+let reader = QuotaBalanceMenuController(defaults: localDefaults, chinese: true, diagnosticURL: diagnostic,
+    historyURL: folder.appendingPathComponent("account.json"), planHistoryURL: planURL,
+    desktopAccess: { precondition(!localDefaults.bool(forKey: QuotaBalanceMenuController.localOnlyKey)); return false },
+    credentialLoader: { fatalError("local mode must never load credentials") })
+reader.menuWillOpen()
+let reload = reader.settingsItem.submenu!.items.first { $0.title == "重读本机记录" }!
+precondition(NSApp.sendAction(reload.action!, to: reload.target, from: reload))
+precondition(reader.active && !reader.enabled && !reader.desktopSyncEnabled && reader.currentQuotas.claude == nil)
+precondition(reader.displayedClaude(at: now).snapshot?.week?.remaining == 73)
+let localDelegate = AppDelegate(quotaBalanceMenu: reader)
+localDelegate.verifyLocalMenu()
+let diag = try! JSONSerialization.jsonObject(with: Data(contentsOf: diagnostic)) as! [String: Any]
+precondition(diag["claude_requests_started_this_process"] as? Int == 0 && diag["claude_desktop_accessibility"] as? Bool == false)
+
+precondition(reader.saveCalibration(organization: "one", fableUsed: 60, reset: fableReset, now: now))
+precondition(reader.saveCalibration(organization: "one", fableUsed: nil, reset: reset.addingTimeInterval(3600), now: now))
+precondition(reader.localForecast?.fable?.used == 60 && reader.localForecast?.resetSource == .manual)
+precondition(!reader.saveCalibration(organization: "one", fableUsed: 101, reset: fableReset, now: now))
+precondition(!reader.saveCalibration(organization: "one", fableUsed: 30, reset: now, now: now))
+let reloadedLocal = QuotaBalanceMenuController(defaults: localDefaults, planHistoryURL: planURL)
+precondition(reloadedLocal.localForecast?.fable?.used == 60 && reloadedLocal.localForecast?.resetSource == .manual)
+let switched = entries + [tray(now.addingTimeInterval(1), 11, "two")]
+savePlan(switched)
+reader.refreshIfDue(now: now.addingTimeInterval(2))
+precondition(reader.localForecast?.fable == nil && reader.localForecast?.weekReset == nil)
+precondition(!reader.saveCalibration(organization: "one", fableUsed: 50, reset: fableReset, now: now.addingTimeInterval(2)))
+savePlan(entries + [tray(now.addingTimeInterval(1), 1)])
+reader.refreshIfDue(now: now.addingTimeInterval(2))
+precondition(reader.localForecast?.weekReset == nil, "a total drop invalidates a total reset calibration")
+savePlan(entries, version: 3)
+reader.menuWillOpen()
+precondition(reader.displayedClaude(at: now).snapshot == nil && reader.localForecast == nil)
+reader.setLocalOnly(false)
+precondition(reader.enabled && reader.desktopSyncEnabled, "leaving local mode restores prior choices")
+
+savePlan([tray(now, true)])
+precondition(ClaudePlanHistory.read(planURL, at: now) == nil)
+savePlan([tray(now, 103)])
+precondition(ClaudePlanHistory.read(planURL, at: now) == nil)
+savePlan([tray(now, 3, "one"), tray(now, 3, "two")])
+precondition(ClaudePlanHistory.read(planURL, at: now) == nil)
+savePlan([tray(a, 12), tray(now, 15, "one", true), tray(now.addingTimeInterval(60), 55)])
+precondition(ClaudePlanHistory.read(planURL, at: now)?.latest.fiveHour == nil)
+precondition(ClaudePlanHistory.read(planURL, at: now)?.latest.week == 15)
+try Data(repeating: 32, count: 256 * 1024 + 1).write(to: planURL)
+precondition(ClaudePlanHistory.read(planURL, at: now) == nil)
+try FileManager.default.removeItem(at: planURL)
+precondition(ClaudePlanHistory.read(planURL, at: now) == nil)
+
+// Two closely bracketed, seven-day-separated drops predict a boundary. One isolated redemption does not.
+let lastDrop = now.addingTimeInterval(-2 * day)
+let firstDrop = lastDrop.addingTimeInterval(-7 * day)
+let recurring = [tray(firstDrop.addingTimeInterval(-1800), 31), tray(firstDrop, 1),
+                 tray(lastDrop.addingTimeInterval(-1800), 44), tray(lastDrop, 0), tray(now, 14)]
+savePlan(recurring)
+let repeated = ClaudePlanHistory.read(planURL, at: now)!
+precondition(abs(repeated.estimatedReset(at: now)!.timeIntervalSince(lastDrop.addingTimeInterval(7 * day - 900))) < 0.002)
+precondition(repeated.estimatedReset(at: now.addingTimeInterval(6 * day)) == nil)
+savePlan(Array(recurring.dropFirst(2)))
+precondition(ClaudePlanHistory.read(planURL, at: now)!.estimatedReset(at: now) == nil)
+
 // A new week replaces the old samples instead of mixing windows.
 let rollover = ClaudeUsageHistory(url: nil)
 rollover.record(snapshot(at: now, week: 40, fable: nil))
@@ -217,7 +337,7 @@ for x in stride(from: 0, to: rep.pixelsWide, by: 1) {
     }
 }
 precondition(counts[0] > 40, "the Claude used bar must be drawn \(counts)")
-print("Codex-only menu isolation, Claude weekly history, rollover, privacy and pace bars: ok")
+print("Codex-only menu, account and local Claude forecasts, calibration, rollover, isolation and pace bars: ok")
 '''
 
 with tempfile.TemporaryDirectory() as folder:

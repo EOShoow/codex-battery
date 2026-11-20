@@ -8,7 +8,8 @@ final class QuotaBalanceView: NSView {
 
     init(codex: ProviderQuotaSnapshot?, claude: ProviderQuotaSnapshot?, codexReliable: Bool,
          claudeReliable: Bool, claudeStatus: String, now: Date, chinese: Bool,
-         desktopResets: ClaudeDesktopResetSnapshot? = nil, claudeFromDesktop: Bool = false) {
+         desktopResets: ClaudeDesktopResetSnapshot? = nil, claudeFromDesktop: Bool = false,
+         localOnly: Bool = false, estimatedWeekReset: Bool = false) {
         super.init(frame: NSRect(x: 0, y: 0, width: 460, height: Self.height))
         func text(_ value: String, x: CGFloat, y: CGFloat, width: CGFloat, bold: Bool = false,
                   secondary: Bool = false, tooltip: String? = nil) {
@@ -53,8 +54,10 @@ final class QuotaBalanceView: NSView {
             let suffix = stale ? (chinese ? " · 旧" : " · stale") : ""
             let reset = date(snapshot?.fiveHour?.resetsAt, format: "M/d HH:mm")
             let desktopLabel = chinese ? "Claude Desktop 用量页" : "Claude Desktop Usage page"
+            let local = localOnly && x == 282
+            let localLabel = chinese ? "Claude Desktop 本机用量记录" : "Claude Desktop tray history"
             text(window(snapshot?.fiveHour) + (snapshot?.fiveHour == nil ? "" : suffix), x: x, y: 36, width: 162,
-                 tooltip: fromDesktop ? desktopLabel : (chinese ? "5 小时窗口重置：" : "5-hour reset: ") + reset)
+                 tooltip: local ? localLabel : (fromDesktop ? desktopLabel : (chinese ? "5 小时窗口重置：" : "5-hour reset: ") + reset))
             // Model-specific weekly limits (e.g. Fable) are limits of their own; show them beside the week.
             let models = (snapshot?.modelWindows ?? [:]).sorted { $0.key < $1.key }
                 .filter { fromDesktop || (!$0.value.notStarted && $0.value.isCurrent(at: now)) }
@@ -78,17 +81,19 @@ final class QuotaBalanceView: NSView {
             let resetSuffix = stock != nil && desktop == nil ? suffix : ""
             text(resets(stock) + resetSuffix, x: x, y: 92, width: 162,
                  tooltip: grantLines.isEmpty ? nil : grantLines.joined(separator: "\n"))
-            text(date(snapshot?.week?.resetsAt, format: "M/d HH:mm"), x: x, y: 118, width: 162, secondary: true)
+            let approximate = local && estimatedWeekReset && snapshot?.week?.resetsAt != nil
+            text((approximate ? "≈ " : "") + date(snapshot?.week?.resetsAt, format: "M/d HH:mm"), x: x, y: 118, width: 162, secondary: true)
             let timestamp = fromDesktop ? (chinese ? "约 " : "≈ ") + date(snapshot?.checkedAt, format: "M/d HH:mm")
                 : date(snapshot?.checkedAt, format: "M/d HH:mm:ss")
             text(timestamp, x: x, y: 144, width: 162, secondary: true,
-                 tooltip: fromDesktop ? desktopLabel + " · " + timestamp : nil)
+                 tooltip: local ? localLabel : (fromDesktop ? desktopLabel + " · " + timestamp : nil))
         }
         let advice = QuotaBalanceAdvice.make(codex: codex, claude: claude, codexReliable: codexReliable,
                                              claudeReliable: claudeReliable && !claudeFromDesktop, now: now, chinese: chinese)
-        text(advice.title, x: 16, y: 172, width: 428, bold: true, tooltip: advice.detail)
+        let title = localOnly ? (chinese ? "Claude 本机用量预测" : "Local Claude usage forecast") : advice.title
+        text(title, x: 16, y: 172, width: 428, bold: true, tooltip: localOnly ? claudeStatus : advice.detail)
         text(claudeStatus, x: 16, y: 194, width: 428, secondary: true)
-        toolTip = advice.detail
+        toolTip = localOnly ? claudeStatus : advice.detail
     }
 
     /// "5-hour reset ×2 · expires 12/1": what one Claude Code grant clears, how many are left, and until when.
@@ -122,6 +127,8 @@ final class QuotaBalanceView: NSView {
 
 final class QuotaBalanceMenuController: NSObject {
     static let enabledKey = "claudeQuotaEnabled"
+    static let localOnlyKey = "claudeLocalForecastOnly"
+    private static let calibrationKey = "claudeLocalForecastCalibration"
     private static let desktopSyncKey = "claudeDesktopSyncEnabled"
     private static let nextCheckKey = "claudeQuotaNextCheck"
     private static let cooldownKey = "claudeQuotaCooldown"
@@ -144,6 +151,8 @@ final class QuotaBalanceMenuController: NSObject {
     private let desktopAccess: () -> Bool
     private let diagnosticURL: URL?
     private let historyURL: URL?
+    private let planHistoryURL: URL?
+    private(set) var localForecast: ClaudeLocalForecast?
     private(set) lazy var history = ClaudeUsageHistory(url: historyURL)
     private var requestsStarted = 0
     private var request: URLSessionDataTask?
@@ -164,6 +173,7 @@ final class QuotaBalanceMenuController: NSObject {
          client: ClaudeQuotaClient = ClaudeQuotaClient(),
          diagnosticURL: URL? = nil,
          historyURL: URL? = nil,
+         planHistoryURL: URL? = nil,
          desktopAccess: @escaping () -> Bool = { ClaudeDesktopResetMonitor.hasAccess },
          credentialLoader: @escaping () throws -> ClaudeQuotaCredential = ClaudeQuotaCredential.load) {
         self.defaults = defaults
@@ -171,13 +181,14 @@ final class QuotaBalanceMenuController: NSObject {
         self.client = client
         self.diagnosticURL = diagnosticURL
         self.historyURL = historyURL
+        self.planHistoryURL = planHistoryURL
         self.desktopAccess = desktopAccess
         self.credentialLoader = credentialLoader
         super.init()
         if defaults.object(forKey: Self.desktopSyncKey) == nil, let snapshot = storedDesktopResets() {
             // Earlier builds saved a snapshot only after the user's Accessibility grant and a successful read.
             defaults.set(true, forKey: Self.desktopSyncKey)
-            desktopResets = snapshot
+            if !localOnly { desktopResets = snapshot }
         } else if desktopSyncEnabled {
             desktopResets = storedDesktopResets()
         }
@@ -190,20 +201,27 @@ final class QuotaBalanceMenuController: NSObject {
             defaults.removeObject(forKey: Self.cooldownKey)
             defaults.removeObject(forKey: Self.nextCheckKey)
         }
+        if localOnly { readLocalForecast(at: Date()) }
         rebuild()
     }
 
-    var enabled: Bool { defaults.bool(forKey: Self.enabledKey) }
-    var desktopSyncEnabled: Bool { defaults.bool(forKey: Self.desktopSyncKey) }
-    var active: Bool { enabled || desktopSyncEnabled }
+    var localOnly: Bool { defaults.bool(forKey: Self.localOnlyKey) }
+    var enabled: Bool { !localOnly && defaults.bool(forKey: Self.enabledKey) }
+    var desktopSyncEnabled: Bool { !localOnly && defaults.bool(forKey: Self.desktopSyncKey) }
+    var active: Bool { localOnly || enabled || desktopSyncEnabled }
     var desktopQuotaFallbackActive: Bool {
         enabled && desktopSyncEnabled && defaults.string(forKey: Self.lastOutcomeKey) == ClaudeQuotaError.loginExpired.outcome
     }
     var currentQuotas: (codex: ProviderQuotaSnapshot?, claude: ProviderQuotaSnapshot?, codexReliable: Bool, claudeReliable: Bool) {
-        (codex, claude, codexReliable, enabled && lastError == nil)
+        (codex, enabled ? claude : nil, codexReliable, enabled && lastError == nil)
     }
 
     func displayedClaude(at now: Date) -> (snapshot: ProviderQuotaSnapshot?, reliable: Bool, fromDesktop: Bool) {
+        if localOnly {
+            let snapshot = localForecast?.snapshot
+            let currentWeek = snapshot?.week?.resetsAt.map { $0 > now } ?? true
+            return (snapshot, currentWeek && snapshot?.isFresh(at: now) == true, false)
+        }
         guard enabled else { return (nil, false, false) }
         if let claude { return (claude, lastError == nil && claude.isFresh(at: now), false) }
         if desktopQuotaFallbackActive, let desktopQuota {
@@ -216,6 +234,31 @@ final class QuotaBalanceMenuController: NSObject {
         return (history.lastWeeklySnapshot(at: now), false, false)
     }
     private func t(_ zh: String, _ en: String) -> String { chinese ? zh : en }
+
+    private var calibration: ClaudeLocalCalibration? {
+        defaults.data(forKey: Self.calibrationKey).flatMap { try? JSONDecoder().decode(ClaudeLocalCalibration.self, from: $0) }
+    }
+
+    private func readLocalForecast(at now: Date) {
+        let outcome = defaults.string(forKey: Self.lastOutcomeKey)
+        let allowHistory = outcome == "ok" || outcome == ClaudeQuotaError.loginExpired.outcome
+        localForecast = ClaudePlanHistory.read(planHistoryURL, at: now).map {
+            ClaudeLocalForecast(plan: $0, history: allowHistory ? history : nil, page: allowHistory ? desktopQuota : nil,
+                                calibration: calibration, now: now)
+        }
+    }
+
+    @objc private func toggleLocalForecast() { setLocalOnly(!localOnly) }
+
+    func setLocalOnly(_ value: Bool) {
+        guard localOnly != value else { return }
+        cancelAccountCheck()
+        defaults.set(value, forKey: Self.localOnlyKey)
+        desktopResets = desktopSyncEnabled ? storedDesktopResets() : nil
+        if value { readLocalForecast(at: Date()) } else { localForecast = nil }
+        rebuild()
+        onSettingsChange?()
+    }
 
     func updateCodex(_ snapshot: ProviderQuotaSnapshot?, reliable: Bool) {
         codex = snapshot
@@ -246,6 +289,7 @@ final class QuotaBalanceMenuController: NSObject {
     @objc private func toggleDesktopSync() { setDesktopSyncEnabled(!desktopSyncEnabled) }
 
     func setDesktopSyncEnabled(_ value: Bool) {
+        guard !localOnly else { return }
         defaults.set(value, forKey: Self.desktopSyncKey)
         desktopResets = value ? storedDesktopResets() : nil
         rebuild()
@@ -257,12 +301,18 @@ final class QuotaBalanceMenuController: NSObject {
     }
 
     func menuWillOpen() {
+        if localOnly { refreshIfDue(); return }
         rebuild()
         refreshIfDue()
     }
 
     /// Shares existing refresh opportunities; no timer and no model request.
     func refreshIfDue(manual: Bool = false, now: Date = Date()) {
+        if localOnly {
+            readLocalForecast(at: now)
+            rebuild()
+            return
+        }
         guard enabled, !checking else { return }
         let next = defaults.object(forKey: Self.nextCheckKey) as? Date ?? .distantPast
         let cooldown = defaults.object(forKey: Self.cooldownKey) as? Date ?? .distantPast
@@ -355,15 +405,20 @@ final class QuotaBalanceMenuController: NSObject {
 
     @objc private func toggle() { setEnabled(!enabled) }
 
-    func setEnabled(_ value: Bool) {
+    private func cancelAccountCheck() {
         generation += 1
         request?.cancel()
         request = nil
         checking = false
-        defaults.set(value, forKey: Self.enabledKey)
         claude = nil
         lastError = nil
         identity = nil
+    }
+
+    func setEnabled(_ value: Bool) {
+        guard !localOnly else { return }
+        cancelAccountCheck()
+        defaults.set(value, forKey: Self.enabledKey)
         // Keep cooldown across toggles/relaunches; toggling cannot evade a 429.
         rebuild()
         onSettingsChange?()
@@ -376,6 +431,70 @@ final class QuotaBalanceMenuController: NSObject {
     }
     @objc private func openUsage() { NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!) }
 
+    @objc private func enterWeeklyReset() { editCalibration(forFable: false) }
+    @objc private func enterFable() { editCalibration(forFable: true) }
+
+    private func editCalibration(forFable: Bool) {
+        guard localOnly, let localForecast else { return }
+        let org = localForecast.plan.organization
+        let alert = NSAlert()
+        alert.messageText = forFable ? t("录入 Fable 周读数", "Enter Fable weekly reading") : t("校准总周重置时间", "Set weekly reset")
+        alert.informativeText = forFable ? t("填写刚看到的 Fable 已用百分比和它自己的重置时间。", "Enter the Fable usage you just observed and its own reset time.")
+            : t("填写 Claude 所有模型的本周重置时间。", "Enter this week's reset time for all Claude models.")
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd HH:mm"
+        format.isLenient = false
+        let reset = NSTextField(string: "")
+        if let known = forFable ? localForecast.fable?.reset : localForecast.weekReset { reset.stringValue = format.string(from: known) }
+        reset.placeholderString = "yyyy-MM-dd HH:mm"
+        let used = NSTextField(string: "")
+        used.placeholderString = "0–100"
+        var controls: [NSView] = []
+        if forFable { controls += [NSTextField(labelWithString: t("Fable 本周已用（%）", "Fable used this week (%)")), used] }
+        controls += [NSTextField(labelWithString: t("重置时间（本地时间）", "Reset in local time")), reset]
+        let form = NSStackView(views: controls)
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 5
+        for control in [reset, used] { control.widthAnchor.constraint(equalToConstant: 240).isActive = true }
+        form.frame = NSRect(x: 0, y: 0, width: 248, height: forFable ? 98 : 48)
+        alert.accessoryView = form
+        alert.addButton(withTitle: t("保存", "Save"))
+        alert.addButton(withTitle: t("取消", "Cancel"))
+        alert.window.initialFirstResponder = forFable ? used : reset
+        while alert.runModal() == .alertFirstButtonReturn {
+            let now = Date()
+            let dateInput = reset.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let percentage = Double(used.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard let date = format.date(from: dateInput), format.string(from: date) == dateInput, date > now,
+                  date.timeIntervalSince(now) <= ClaudeUsageHistory.weekSeconds,
+                  !forFable || percentage.map({ (0...100).contains($0) }) == true else {
+                alert.informativeText = t("请按 yyyy-MM-dd HH:mm 填写未来七天内的重置时间。已用百分比范围为 0–100。", "Use yyyy-MM-dd HH:mm within the next seven days. Usage must be 0–100 percent.")
+                continue
+            }
+            if !saveCalibration(organization: org, fableUsed: percentage, reset: date, now: now) {
+                let message = NSAlert()
+                message.messageText = t("本机用量来源已变化，请重读后再录入。", "The local usage source changed. Reload before entering a reading.")
+                message.runModal()
+            }
+            return
+        }
+    }
+
+    func saveCalibration(organization: String, fableUsed: Double?, reset: Date, now: Date) -> Bool {
+        guard localOnly, let plan = ClaudePlanHistory.read(planHistoryURL, at: now), plan.organization == organization else { return false }
+        let reading = ClaudeLocalCalibration.Reading(used: fableUsed ?? plan.latest.week, time: now, reset: reset)
+        guard reading.isInCycle(at: now) else { return false }
+        var saved = calibration.flatMap { $0.organization == organization ? $0 : nil }
+            ?? ClaudeLocalCalibration(organization: organization)
+        if fableUsed != nil { saved.fable = reading } else { saved.total = reading }
+        guard let data = try? JSONEncoder().encode(saved) else { return false }
+        defaults.set(data, forKey: Self.calibrationKey)
+        refreshIfDue(now: now)
+        return true
+    }
+
     private func rebuild() {
         let now = Date()
         let fallbackActive = desktopQuotaFallbackActive
@@ -384,7 +503,12 @@ final class QuotaBalanceMenuController: NSObject {
         let canReadDesktopQuota = fallbackActive && desktopAccess()
         let shown = displayedClaude(at: now)
         let status: String
-        if !enabled { status = t("Claude Desktop 重置同步", "Claude Desktop reset sync") }
+        if localOnly {
+            if shown.reliable { status = t("用量来自 Claude Desktop 本机记录", "Usage from Claude Desktop's local tray history") }
+            else if shown.snapshot != nil { status = t("本机样本已旧 · 打开 Claude 菜单栏可恢复采样", "Tray sample is stale · open Claude's menu bar icon to resume") }
+            else { status = t("等待本机用量记录 · 可打开一次 Claude 菜单栏", "Waiting for tray history · open Claude's menu bar icon") }
+        }
+        else if !enabled { status = t("Claude Desktop 重置同步", "Claude Desktop reset sync") }
         else if fallbackActive && !canReadDesktopQuota { status = t("桌面用量同步 · 等待辅助功能权限", "Desktop quota sync · waiting for Accessibility access") }
         else if shown.fromDesktop {
             status = shown.reliable ? t("Claude Desktop 已同步 · 终端登录已过期", "Synced from Claude Desktop · CLI login expired")
@@ -400,31 +524,51 @@ final class QuotaBalanceMenuController: NSObject {
         else { status = t("均衡提示仅供参考 · 两家的百分比独立计算", "Pacing hint only · each provider has its own quota") }
         item.view = active ? QuotaBalanceView(codex: codex, claude: shown.snapshot, codexReliable: codexReliable,
                                              claudeReliable: shown.reliable, claudeStatus: status, now: now,
-                                             chinese: chinese, desktopResets: desktopResets, claudeFromDesktop: shown.fromDesktop) : nil
+                                             chinese: chinese, desktopResets: desktopResets, claudeFromDesktop: shown.fromDesktop,
+                                             localOnly: localOnly, estimatedWeekReset: localForecast?.resetSource == .estimatedReset) : nil
         let submenu = NSMenu()
         submenu.autoenablesItems = false
+        let local = NSMenuItem(title: t("仅用本机记录预测（免授权）", "Local forecast only (no permissions)"),
+                               action: #selector(toggleLocalForecast), keyEquivalent: "")
+        local.target = self
+        local.state = localOnly ? .on : .off
+        submenu.addItem(local)
         let toggle = NSMenuItem(title: t("启用账户额度检查", "Enable account quota checks"), action: #selector(toggle), keyEquivalent: "")
         toggle.target = self
+        toggle.isEnabled = !localOnly
         toggle.state = enabled ? .on : .off
         submenu.addItem(toggle)
         let desktopToggle = NSMenuItem(title: t("从 Claude Desktop 同步重置", "Sync resets from Claude Desktop"),
                                        action: #selector(toggleDesktopSync), keyEquivalent: "")
         desktopToggle.target = self
+        desktopToggle.isEnabled = !localOnly
         desktopToggle.state = desktopSyncEnabled ? .on : .off
         submenu.addItem(desktopToggle)
-        let check = NSMenuItem(title: t("立即检查", "Check now"), action: #selector(checkNow), keyEquivalent: "")
+        let checkTitle = localOnly ? t("重读本机记录", "Reload local history") : t("立即检查", "Check now")
+        let check = NSMenuItem(title: checkTitle, action: #selector(checkNow), keyEquivalent: "")
         check.target = self
         let cooldown = defaults.object(forKey: Self.cooldownKey) as? Date ?? .distantPast
         let lastAttempt = defaults.object(forKey: Self.lastHTTPAttemptKey) as? Date ?? .distantPast
         let canCheckAccount = enabled && !checking && (now >= cooldown || defaults.bool(forKey: Self.credentialBlockedKey))
             && now.timeIntervalSince(lastAttempt) >= 60 && (claude.map { now.timeIntervalSince($0.checkedAt) >= 60 } ?? true)
-        check.isEnabled = canReadDesktopQuota || canCheckAccount
+        check.isEnabled = localOnly || canReadDesktopQuota || canCheckAccount
         submenu.addItem(check)
+        if localOnly {
+            for (title, action) in [(t("校准总周重置时间…", "Set weekly reset…"), #selector(enterWeeklyReset)),
+                                    (t("录入 Fable 周读数…", "Enter Fable reading…"), #selector(enterFable))] {
+                let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                entry.target = self
+                entry.isEnabled = localForecast != nil
+                submenu.addItem(entry)
+            }
+        }
         let usage = NSMenuItem(title: t("在浏览器打开 Claude 用量页", "Open Claude usage in browser"), action: #selector(openUsage), keyEquivalent: "")
         usage.target = self
         submenu.addItem(usage)
         submenu.addItem(.separator())
-        var notes = [t("复用本机 Claude Code 登录；仅读取账户用量", "Uses local Claude Code login; account usage only"),
+        var notes = localOnly ? [t("只读本机文件，随菜单和现有刷新更新", "Reads local files on menu open and scheduled refresh"),
+                                 t("Fable 取自独立读数，可在本机录入", "Fable uses its own saved or manually entered reading")] :
+                    [t("复用本机 Claude Code 登录；仅读取账户用量", "Uses local Claude Code login; account usage only"),
                      t("随现有刷新检查，自动间隔至少 5 分钟", "Shares refreshes; automatic interval at least 5 minutes"),
                      t("额度检查不调用模型；任务由新任务入口发起", "Quota checks do not run models; use New task for work")]
         if enabled, let next = defaults.object(forKey: Self.nextCheckKey) as? Date, next > now {
@@ -476,7 +620,8 @@ final class QuotaBalanceMenuController: NSObject {
             row.isEnabled = false
             submenu.addItem(row)
         }
-        settingsItem.title = active ? t("Claude Code：已启用", "Claude Code: On") : t("Claude Code：未启用", "Claude Code: Off")
+        settingsItem.title = localOnly ? t("Claude Code：本机预测", "Claude Code: Local forecast")
+            : (active ? t("Claude Code：已启用", "Claude Code: On") : t("Claude Code：未启用", "Claude Code: Off"))
         settingsItem.submenu = submenu
         writeDiagnostics(status: status, now: now)
         onChange?()
@@ -488,6 +633,7 @@ final class QuotaBalanceMenuController: NSObject {
         let fields = (item.view?.subviews.compactMap { ($0 as? NSTextField)?.stringValue }) ?? []
         var summary: [String: Any] = [
             "updated_at": ISO8601DateFormatter().string(from: now), "enabled": enabled,
+            "claude_local_forecast_only": localOnly,
             "claude_desktop_accessibility": desktopSyncEnabled && desktopAccess(),
             "claude_requests_started_this_process": requestsStarted, "status": status, "menu_text": fields
         ]

@@ -2,14 +2,14 @@ import AppKit
 
 /// One quota on the shared weekly pace view: used now, projected use at reset, and where even pacing would be.
 struct PaceRow {
-    let name: String
+    var name: String
     let color: NSColor          // provider identity; used fill and projection tint
     let used: Double?           // percent used now
     let projectedUsed: Double?  // percent used at reset; >= 100 means it runs out first
     let pace: Double?           // fraction of the week elapsed (even-pace position)
     let endText: String
     let tone: NSColor           // status color for the end text
-    let tooltip: String
+    var tooltip: String
 
     var runsOut: Bool { (projectedUsed ?? 0) >= 100 }
 
