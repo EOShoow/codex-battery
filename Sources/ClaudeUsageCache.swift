@@ -6,46 +6,58 @@ import zlib
 /// The official Usage response already saved by Claude Desktop for the tray's organization.
 /// Chromium's Simple Cache format is private. Open only known keys and skip its HTTP metadata.
 enum ClaudeUsageCache {
-    struct Sample: Equatable {
+    struct Sample<Value: Codable & Equatable>: Codable, Equatable {
         let time: Date
-        let fable: ClaudeLocalCalibration.Reading?
+        let value: Value?
+
+        func newest(comparedTo other: Self?) -> Self {
+            guard let other else { return self }
+            if time == other.time && value != other.value { return Self(time: time, value: nil) }
+            return time >= other.time ? self : other
+        }
+
+        func isStale(at now: Date) -> Bool { now.timeIntervalSince(time) > 15 * 60 }
     }
 
-    static func latest(in directory: URL, organization: String, at now: Date, previous: Sample?) -> Sample? {
-        guard let org = UUID(uuidString: organization) else { return nil }
+    typealias FableSample = Sample<ClaudeLocalCalibration.Reading>
+    typealias ResetSample = Sample<ClaudeResetStatus>
+    struct Readings {
+        var fable: FableSample?
+        var resets: ResetSample?
+    }
+
+    static func latest(in directory: URL, organization: String, at now: Date, previous: Readings = Readings()) -> Readings {
+        guard let org = UUID(uuidString: organization) else { return Readings() }
         let base = "1/0/https://claude.ai/api/organizations/" + org.uuidString.lowercased() + "/usage"
-        var newest = previous.flatMap { $0.time <= now ? $0 : nil }
+        var newest = Readings(fable: previous.fable.flatMap { $0.time <= now ? $0 : nil },
+                              resets: previous.resets.flatMap { $0.time <= now ? $0 : nil })
         for suffix in ["?skip_spend=1", "", "?cedar_ember=1&skip_spend=1"] {
             let key = Data((base + suffix).utf8)
             // Chromium names the file using the first eight SHA-1 bytes as a little-endian integer.
             let name = Insecure.SHA1.hash(data: key).prefix(8).reversed().map { String(format: "%02x", $0) }.joined() + "_0"
             guard let body = responseBody(in: directory.appendingPathComponent(name), key: key),
-                  let sample = parse(body, at: now) else { continue }
-            if let current = newest {
-                if current.time > sample.time { continue }
-                if current.time == sample.time && current != sample {
-                    newest = Sample(time: current.time, fable: nil)
-                    continue
-                }
+                  let root = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let breakdown = root["seven_day_breakdown"] as? [String: Any], let stamp = breakdown["as_of"] as? String,
+                  let time = ProviderQuotaSnapshot.date(stamp), time <= now else { continue }
+            if let fable = fableSample(root, at: time) { newest.fable = fable.newest(comparedTo: newest.fable) }
+            // Regular tray responses carry a null reset block. Only a real inventory has a new reset timestamp.
+            if let block = root[ClaudeQuotaClient.resetBlockKey], let status = ClaudeResetStatus.parse(block, requireCompleteGrants: true) {
+                newest.resets = ResetSample(time: time, value: status).newest(comparedTo: newest.resets)
             }
-            newest = sample
         }
         return newest
     }
 
-    private static func parse(_ data: Data, at now: Date) -> Sample? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let breakdown = root["seven_day_breakdown"] as? [String: Any], let stamp = breakdown["as_of"] as? String,
-              let time = ProviderQuotaSnapshot.date(stamp), time <= now,
-              let rows = root["limits"] as? [[String: Any]], rows.count <= 64 else { return nil }
+    private static func fableSample(_ root: [String: Any], at time: Date) -> FableSample? {
+        guard let rows = root["limits"] as? [[String: Any]], rows.count <= 64 else { return nil }
         let models = rows.filter { ClaudeQuotaClient.scopedModelKey($0) == "seven_day_fable" }
-        guard !models.isEmpty else { return Sample(time: time, fable: nil) }
+        guard !models.isEmpty else { return FableSample(time: time, value: nil) }
         guard models.count == 1, let window = ClaudeQuotaClient.scopedWindow(models[0]) else { return nil }
         guard let reset = window.resetsAt else {
-            return window.notStarted ? Sample(time: time, fable: nil) : nil
+            return window.notStarted ? FableSample(time: time, value: nil) : nil
         }
         let reading = ClaudeLocalCalibration.Reading(used: min(100, window.used), time: time, reset: reset)
-        return reading.isInCycle(at: time) ? Sample(time: time, fable: reading) : nil
+        return reading.isInCycle(at: time) ? FableSample(time: time, value: reading) : nil
     }
 
     private static let bodyLimit = 256 * 1024

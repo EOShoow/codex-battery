@@ -1307,13 +1307,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             where shown.fromDesktop || (!window.notStarted && window.isCurrent(at: now)) {
                 parts.append("\(ClaudeForecast.displayName(key)) \(window.remaining)%")
             }
-            if desktopResets == nil, let resetStock { parts.append(t("可用重置 \(resetStock.count)", "resets \(resetStock.count)")) }
+            if !quotaBalanceMenu.localOnly, desktopResets == nil, let resetStock {
+                parts.append(t("可用重置 \(resetStock.count)", "resets \(resetStock.count)"))
+            }
             if !parts.isEmpty {
                 let source = quotaBalanceMenu.localOnly ? t("Claude 本机记录", "Claude tray history") : (shown.fromDesktop ? "Claude Desktop" : "Claude Code")
                 lines.append(source + ": " + parts.joined(separator: " · ") + (shown.reliable ? "" : t("  旧数据", "  cached")))
             }
         }
-        if let desktopResets, let resetStock {
+        if let local = quotaBalanceMenu.localResetSample, resetStock != nil {
+            let labels = QuotaBalanceView.localResetLabels(local, at: now, chinese: useChinese)
+            lines.append(t("Claude 可用重置 ", "Claude resets ") + labels.summary)
+        } else if let desktopResets, let resetStock {
             lines.append(QuotaBalanceView.desktopSyncLabel(desktopResets.syncedAt, chinese: useChinese) + " · "
                          + t("可用重置 \(resetStock.count)", "\(resetStock.count) resets"))
         }

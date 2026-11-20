@@ -43,18 +43,23 @@ struct ClaudeResetGrant: Codable, Equatable {
     let resetsTotal: Int
     let endsAt: Date?
     let paused: Bool
+    var startsAt: Date? = nil
 
-    func isAvailable(at now: Date) -> Bool { resetsLeft > 0 && !paused && (endsAt.map { $0 > now } ?? true) }
+    func isAvailable(at now: Date) -> Bool {
+        resetsLeft > 0 && !paused && (startsAt.map { $0 <= now } ?? true) && (endsAt.map { $0 > now } ?? true)
+    }
 }
 
 /// The reset block Claude Code reads next to account usage. An undocumented local-client protocol:
 /// every field is optional, and anything unreadable yields no count instead of a guess.
-struct ClaudeResetStatus: Equatable {
+struct ClaudeResetStatus: Codable, Equatable {
     let eligible: Bool
     let ineligibleReason: String?
     let grants: [ClaudeResetGrant]
 
-    static func parse(_ raw: Any) -> ClaudeResetStatus? {
+    /// A locally retained inventory needs all grant counts and validity dates to be readable.
+    /// Keep only structured grant fields in that copy of the data.
+    static func parse(_ raw: Any, requireCompleteGrants: Bool = false) -> ClaudeResetStatus? {
         func integer(_ value: Any?) -> Int? {
             guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
                   number.doubleValue.isFinite, number.doubleValue >= 0, number.doubleValue <= 10_000,
@@ -66,17 +71,31 @@ struct ClaudeResetStatus: Equatable {
             return number.boolValue
         }
         guard let object = raw as? [String: Any], let eligible = flag(object["eligible"]) else { return nil }
-        let grants: [ClaudeResetGrant] = ((object["grants"] as? [Any]) ?? []).compactMap { item in
+        let rows = object["grants"] as? [Any]
+        if requireCompleteGrants {
+            guard (rows?.count ?? 0) <= 256,
+                  rows != nil || (!eligible && (object["grants"] == nil || object["grants"] is NSNull)) else { return nil }
+        }
+        let grants: [ClaudeResetGrant] = (rows ?? []).compactMap { item in
             // A grant without a readable remaining count is skipped, never counted as zero or one.
             guard let grant = item as? [String: Any], let left = integer(grant["resets_left"]) else { return nil }
-            let type = (grant["type"] as? String).flatMap { ["session", "weekly", "full"].contains($0) ? $0 : nil }
+            let type = (grant["type"] as? String).flatMap { ["session", "weekly", "full", "fable"].contains($0) ? $0 : nil }
+            let start = (grant["starts_at"] as? String).flatMap(ProviderQuotaSnapshot.date)
+            let end = (grant["ends_at"] as? String).flatMap(ProviderQuotaSnapshot.date)
+            if requireCompleteGrants {
+                func missing(_ key: String) -> Bool { grant[key] == nil || grant[key] is NSNull }
+                guard start != nil || missing("starts_at"), end != nil || missing("ends_at"),
+                      grant["paused"] == nil || flag(grant["paused"]) != nil else { return nil }
+                if let start, let end, start >= end { return nil }
+            }
             return ClaudeResetGrant(
-                label: String(((grant["label"] as? String) ?? "").prefix(60)), type: type, resetsLeft: left,
+                label: requireCompleteGrants ? "" : String(((grant["label"] as? String) ?? "").prefix(60)), type: type, resetsLeft: left,
                 resetsTotal: max(left, integer(grant["resets_total"]) ?? left),
-                endsAt: (grant["ends_at"] as? String).flatMap(ProviderQuotaSnapshot.date),
-                paused: flag(grant["paused"]) ?? false)
+                endsAt: end, paused: flag(grant["paused"]) ?? false, startsAt: start)
         }
+        if requireCompleteGrants, grants.count != (rows?.count ?? 0) { return nil }
         let reason = (object["ineligible_reason"] as? String).map { String($0.prefix(40)) }
+        if requireCompleteGrants, !eligible, reason == "no_grant", grants.contains(where: { $0.resetsLeft > 0 }) { return nil }
         return ClaudeResetStatus(eligible: eligible, ineligibleReason: reason, grants: grants)
     }
 

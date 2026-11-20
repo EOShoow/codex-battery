@@ -9,7 +9,8 @@ final class QuotaBalanceView: NSView {
     init(codex: ProviderQuotaSnapshot?, claude: ProviderQuotaSnapshot?, codexReliable: Bool,
          claudeReliable: Bool, claudeStatus: String, now: Date, chinese: Bool,
          desktopResets: ClaudeDesktopResetSnapshot? = nil, claudeFromDesktop: Bool = false,
-         localOnly: Bool = false, localForecast: ClaudeLocalForecast? = nil) {
+         localOnly: Bool = false, localForecast: ClaudeLocalForecast? = nil,
+         localResets: ClaudeUsageCache.ResetSample? = nil) {
         super.init(frame: NSRect(x: 0, y: 0, width: 460, height: Self.height))
         func text(_ value: String, x: CGFloat, y: CGFloat, width: CGFloat, bold: Bool = false,
                   secondary: Bool = false, tooltip: String? = nil) {
@@ -86,8 +87,13 @@ final class QuotaBalanceView: NSView {
                 .map { QuotaBalanceView.describe($0, chinese: chinese) }
             if let desktop { grantLines.append(Self.desktopSyncLabel(desktop.syncedAt, chinese: chinese)) }
             let resetSuffix = stock != nil && desktop == nil ? suffix : ""
-            text(resets(stock) + resetSuffix, x: x, y: 92, width: 162,
-                 tooltip: grantLines.isEmpty ? nil : grantLines.joined(separator: "\n"))
+            if local {
+                let labels = Self.localResetLabels(localResets, at: now, chinese: chinese)
+                text(labels.summary, x: x, y: 92, width: 162, tooltip: labels.details.joined(separator: "\n"))
+            } else {
+                text(resets(stock) + resetSuffix, x: x, y: 92, width: 162,
+                     tooltip: grantLines.isEmpty ? nil : grantLines.joined(separator: "\n"))
+            }
             let approximate = local && localForecast?.resetSource == .estimatedReset && snapshot?.week?.resetsAt != nil
             text((approximate ? "≈ " : "") + date(snapshot?.week?.resetsAt, format: "M/d HH:mm"), x: x, y: 118, width: 162, secondary: true)
             let timestamp = fromDesktop ? (chinese ? "约 " : "≈ ") + date(snapshot?.checkedAt, format: "M/d HH:mm")
@@ -122,6 +128,31 @@ final class QuotaBalanceView: NSView {
         return line
     }
 
+    static func localResetLabels(_ sample: ClaudeUsageCache.ResetSample?, at now: Date, chinese: Bool) -> (summary: String, details: [String]) {
+        guard let sample else {
+            return ("—", [chinese ? "等待 Claude Desktop 缓存重置明细，可在「设置 → 使用情况」查看。" :
+                                   "Waiting for reset details from Claude Desktop. See Settings → Usage."])
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d HH:mm:ss"
+        var details = [(chinese ? "Claude Desktop 重置明细采样于 " : "Claude Desktop resets sampled ") + formatter.string(from: sample.time)]
+        guard let stock = sample.value?.stock(at: now) else {
+            return ("—", details + [chinese ? "重置数量暂不可用" : "Reset count unavailable"])
+        }
+        var summary = chinese ? "\(stock.count) 次" : "\(stock.count)"
+        if let nearest = stock.nearestExpiry(at: now) {
+            formatter.dateFormat = "M/d HH:mm"
+            let short = formatter.string(from: nearest)
+            summary += chinese ? " · \(short) 到期" : " · exp \(short)"
+            formatter.dateFormat = "yyyy/M/d HH:mm"
+            details.append((chinese ? "最近已知到期时间 " : "Next known expiry ") + formatter.string(from: nearest))
+        } else if stock.count > 0 {
+            details.append(chinese ? "尚无到期时间" : "Expiry time unavailable")
+        }
+        if sample.isStale(at: now) { summary += chinese ? " · 旧" : " · old" }
+        return (summary, details)
+    }
+
     static func desktopSyncLabel(_ syncedAt: Date, chinese: Bool) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "M/d HH:mm"
@@ -136,6 +167,11 @@ final class QuotaBalanceMenuController: NSObject {
     static let enabledKey = "claudeQuotaEnabled"
     static let localOnlyKey = "claudeLocalForecastOnly"
     private static let calibrationKey = "claudeLocalForecastCalibration"
+    private static let localResetKey = "claudeLocalResetInventory"
+    private struct StoredLocalResets: Codable {
+        let organization: String
+        let sample: ClaudeUsageCache.ResetSample
+    }
     private static let desktopSyncKey = "claudeDesktopSyncEnabled"
     private static let nextCheckKey = "claudeQuotaNextCheck"
     private static let cooldownKey = "claudeQuotaCooldown"
@@ -159,7 +195,8 @@ final class QuotaBalanceMenuController: NSObject {
     private let diagnosticURL: URL?
     private let historyURL: URL?
     private let planHistoryURL: URL?
-    private var cachedUsage: (organization: String, sample: ClaudeUsageCache.Sample)?
+    private var cachedUsage: (organization: String, readings: ClaudeUsageCache.Readings)?
+    var localResetSample: ClaudeUsageCache.ResetSample? { localOnly ? cachedUsage?.readings.resets : nil }
     private(set) var localForecast: ClaudeLocalForecast?
     private(set) lazy var history = ClaudeUsageHistory(url: historyURL)
     private var requestsStarted = 0
@@ -256,11 +293,25 @@ final class QuotaBalanceMenuController: NSObject {
             return
         }
         let directory = planHistoryURL.deletingLastPathComponent().appendingPathComponent("Cache/Cache_Data", isDirectory: true)
-        let previous = cachedUsage?.organization == plan.organization ? cachedUsage?.sample : nil
-        let sample = ClaudeUsageCache.latest(in: directory, organization: plan.organization, at: now, previous: previous)
-        cachedUsage = sample.map { (plan.organization, $0) }
+        let previous = previousLocalReadings(organization: plan.organization)
+        let readings = ClaudeUsageCache.latest(in: directory, organization: plan.organization, at: now, previous: previous)
+        if let resets = readings.resets, resets != previous.resets {
+            let record = StoredLocalResets(organization: plan.organization, sample: resets)
+            if let data = try? JSONEncoder().encode(record) { defaults.set(data, forKey: Self.localResetKey) }
+        }
+        cachedUsage = (plan.organization, readings)
         localForecast = ClaudeLocalForecast(plan: plan, history: allowHistory ? history : nil, page: allowHistory ? desktopQuota : nil,
-                                           calibration: calibration, cachedUsage: sample, now: now)
+                                           calibration: calibration, cachedUsage: readings.fable, now: now)
+    }
+
+    private func previousLocalReadings(organization: String) -> ClaudeUsageCache.Readings {
+        if let cachedUsage, cachedUsage.organization == organization { return cachedUsage.readings }
+        guard let data = defaults.data(forKey: Self.localResetKey), data.count <= 256 * 1024,
+              let record = try? JSONDecoder().decode(StoredLocalResets.self, from: data),
+              record.organization == organization else { return .init() }
+        let grants = record.sample.value?.grants ?? []
+        guard grants.count <= 256, grants.allSatisfy({ (0...10_000).contains($0.resetsLeft) }) else { return .init() }
+        return .init(resets: record.sample)
     }
 
     @objc private func toggleLocalForecast() { setLocalOnly(!localOnly) }
@@ -312,7 +363,8 @@ final class QuotaBalanceMenuController: NSObject {
     }
 
     func claudeResetStock(at now: Date) -> ProviderResetStock? {
-        desktopResets?.reading.stock(at: now) ?? claude?.claudeResets?.stock(at: now) ?? claude?.resets
+        if localOnly { return localResetSample?.value?.stock(at: now) }
+        return desktopResets?.reading.stock(at: now) ?? claude?.claudeResets?.stock(at: now) ?? claude?.resets
     }
 
     func menuWillOpen() {
@@ -539,7 +591,7 @@ final class QuotaBalanceMenuController: NSObject {
         item.view = active ? QuotaBalanceView(codex: codex, claude: shown.snapshot, codexReliable: codexReliable,
                                              claudeReliable: shown.reliable, claudeStatus: status, now: now,
                                              chinese: chinese, desktopResets: desktopResets, claudeFromDesktop: shown.fromDesktop,
-                                             localOnly: localOnly, localForecast: localForecast) : nil
+                                             localOnly: localOnly, localForecast: localForecast, localResets: localResetSample) : nil
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let local = NSMenuItem(title: t("仅用本机记录预测（免授权）", "Local forecast only (no permissions)"),
@@ -604,7 +656,10 @@ final class QuotaBalanceMenuController: NSObject {
                 notes.append(key.replacingOccurrences(of: "seven_day_", with: "") + " · " + t("格式未知，暂停建议", "unknown format; advice paused"))
             }
         }
-        if let desktopResets {
+        if localOnly {
+            let labels = QuotaBalanceView.localResetLabels(localResetSample, at: now, chinese: chinese)
+            notes += labels.details
+        } else if let desktopResets {
             notes.append(QuotaBalanceView.desktopSyncLabel(desktopResets.syncedAt, chinese: chinese))
             for grant in desktopResets.reading.grants where grant.isAvailable(at: now) {
                 notes.append(QuotaBalanceView.describe(grant, chinese: chinese))
@@ -656,6 +711,16 @@ final class QuotaBalanceMenuController: NSObject {
             iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             summary["claude_local_fable"] = ["source": forecast.fableSource.rawValue, "used_percent": reading.used,
                                             "sampled_at": iso.string(from: reading.time), "resets_at": iso.string(from: reading.reset)] as [String: Any]
+        }
+        if let sample = localResetSample {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var details: [String: Any] = ["sampled_at": iso.string(from: sample.time), "stale": sample.isStale(at: now)]
+            if let stock = sample.value?.stock(at: now) {
+                details["available"] = stock.count
+                details["nearest_expiry"] = stock.nearestExpiry(at: now).map(iso.string(from:))
+            }
+            summary["claude_local_resets"] = details
         }
         // Outcome codes only (e.g. credential_expired, http_401, ok); never tokens or response bodies.
         if let outcome = defaults.string(forKey: Self.lastOutcomeKey) { summary["claude_last_outcome"] = outcome }

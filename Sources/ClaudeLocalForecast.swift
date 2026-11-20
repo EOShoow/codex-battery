@@ -150,7 +150,7 @@ struct ClaudeLocalForecast {
     let fableSource: Source
 
     init(plan: ClaudePlanHistory, history: ClaudeUsageHistory?, page: ClaudeDesktopQuotaSnapshot?,
-         calibration: ClaudeLocalCalibration?, cachedUsage: ClaudeUsageCache.Sample? = nil, now: Date) {
+         calibration: ClaudeLocalCalibration?, cachedUsage: ClaudeUsageCache.FableSample? = nil, now: Date) {
         self.plan = plan
         let manual = calibration?.organization == plan.organization ? calibration : nil
         let account = history.flatMap { plan.matchingAccount($0) }
@@ -190,7 +190,7 @@ struct ClaudeLocalForecast {
             source = .desktop
         }
         if let cachedUsage, modelTime.map({ $0 <= cachedUsage.time }) ?? true {
-            model = cachedUsage.fable.flatMap { $0.isInCycle(at: now) ? $0 : nil }
+            model = cachedUsage.value.flatMap { $0.isInCycle(at: now) ? $0 : nil }
             source = .desktopUsageCache
         }
         self.fable = model
